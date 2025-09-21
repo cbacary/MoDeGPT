@@ -1,13 +1,24 @@
-import torch
 import logging
+
+import torch
 
 logger = logging.getLogger("MoDeGPT")
 
+
 @torch.no_grad()
-def compress_vo(model, cov=None, keep_ratios=None, rank=None,
-                n_layers=None, n_heads=None, head_dim=None,
-                ridge_lambda=1e-2, min_rank=16, max_condition_number=1e4,
-                logger=None):
+def compress_vo(
+    model,
+    cov=None,
+    keep_ratios=None,
+    rank=None,
+    n_layers=None,
+    n_heads=None,
+    head_dim=None,
+    ridge_lambda=1e-2,
+    min_rank=16,
+    max_condition_number=1e4,
+    logger=None,
+):
     for i in range(n_layers):
         keep_ratio = keep_ratios[i]
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
@@ -26,7 +37,8 @@ def compress_vo(model, cov=None, keep_ratios=None, rank=None,
                 W_v = block.self_attn.v_proj.weight
                 W_o = block.self_attn.o_proj.weight
         except Exception as e:
-            if logger: logger.warning(f"[VO] Layer {i}: cannot access v_proj/o_proj: {e}")
+            if logger:
+                logger.warning(f"[VO] Layer {i}: cannot access v_proj/o_proj: {e}")
             continue
 
         # === compress each head ===
@@ -42,7 +54,8 @@ def compress_vo(model, cov=None, keep_ratios=None, rank=None,
                 C_JJ = C_reg[:rank_i, :rank_i]
                 cond = torch.linalg.cond(C_JJ).item()
                 if cond > max_condition_number:
-                    if logger: logger.warning(f"[VO] Layer {i} Head {h}: cond={cond:.1e}, skipping")
+                    if logger:
+                        logger.warning(f"[VO] Layer {i} Head {h}: cond={cond:.1e}, skipping")
                     continue
 
                 S = C_reg[:, :rank_i] @ torch.linalg.pinv(C_JJ)
@@ -58,14 +71,14 @@ def compress_vo(model, cov=None, keep_ratios=None, rank=None,
                 W_o[:, s:e].data.copy_(O_new.to(dtype=W_o.dtype, device=W_o.device))
 
             except Exception as e:
-                if logger: logger.warning(f"[VO] Layer {i} Head {h}: compression failed: {e}")
+                if logger:
+                    logger.warning(f"[VO] Layer {i} Head {h}: compression failed: {e}")
 
-        if logger: logger.info(f"[VO] ✅ Compressed layer {i} to rank {rank_i} per head (λ={ridge_lambda})")
+        if logger:
+            logger.info(
+                f"[VO] ✅ Compressed layer {i} to rank {rank_i} per head (λ={ridge_lambda})"
+            )
         torch.cuda.empty_cache()
-
-
-
-
 
 
 # SVD Version, cause ppl explosion:

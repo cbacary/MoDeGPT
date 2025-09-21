@@ -1,5 +1,6 @@
-import torch
 import math
+
+import torch
 
 
 @torch.no_grad()
@@ -36,14 +37,16 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
         labels = input_chunk.clone()
         attention_mask = (input_chunk != tokenizer.pad_token_id).long()
 
-        outputs = model(input_ids=input_chunk, labels=labels, attention_mask=attention_mask)
+        outputs = model(
+            input_ids=input_chunk, labels=labels, attention_mask=attention_mask
+        )
         loss = outputs.loss
 
         if not torch.isfinite(loss):
             continue
 
         total_loss += loss.item() * (input_chunk.size(1) - 1)
-        total_tokens += (input_chunk.size(1) - 1)
+        total_tokens += input_chunk.size(1) - 1
 
     if total_tokens == 0:
         raise ValueError("No valid tokens to compute perplexity!")
@@ -52,9 +55,10 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
     return math.exp(avg_nll)
 
 
-
 @torch.no_grad()
-def generate_text(model, tokenizer, prompt: str, max_length: int = 50, device: str = "cpu"):
+def generate_text(
+    model, tokenizer, prompt: str, max_length: int = 50, device: str = "cpu"
+):
     """
     Generate greedy decoded text from prompt.
     """

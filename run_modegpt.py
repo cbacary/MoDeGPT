@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
-import torch
 import argparse
 import logging
-import os
 import math
+import os
 
-from model_utils import load_model, save_model, reload_compressed_model
+import torch
+from datasets import load_dataset
+
 from calibration import calibrate_model
-from sparsity_alloc import allocate_global_sparsity
 from compression_type1 import compress_mlp
 from compression_type2 import compress_qk
 from compression_type3 import compress_vo
-from evaluation import compute_perplexity, evaluate_zero_shot
-from datasets import load_dataset
+
+# from compression_type3_cc import compress_vo
+from evaluation import compute_perplexity
+from model_utils import load_model, reload_compressed_model, save_model
+from sparsity_alloc import allocate_global_sparsity
 
 # ----------------------------
 # Logger Setup
@@ -20,7 +23,7 @@ from datasets import load_dataset
 logger = logging.getLogger("MoDeGPT")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     console = logging.StreamHandler()
     console.setFormatter(formatter)
     logger.addHandler(console)
@@ -29,18 +32,21 @@ if not logger.handlers:
     file.setFormatter(formatter)
     logger.addHandler(file)
 
+
 # ----------------------------
 # Load Calibration/Evaluation Data
 # ----------------------------
 def load_calibration_texts(calib_size):
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     texts = [t for t in dataset["train"]["text"] if len(t.strip()) > 0]
-    return texts if calib_size == "all" else texts[:int(calib_size)]
+    return texts if calib_size == "all" else texts[: int(calib_size)]
+
 
 def load_eval_texts(eval_size):
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     texts = [t for t in dataset["validation"]["text"] if len(t.strip()) > 0]
-    return texts if eval_size == "all" else texts[:int(eval_size)]
+    return texts if eval_size == "all" else texts[: int(eval_size)]
+
 
 # ----------------------------
 # MoDeGPT Compression Main
@@ -81,16 +87,15 @@ def main():
     # Step 1: Calibration
     # ----------------------------
     logger.info("Calibrating model...")
-    cov_mlp, cov_q, cov_k, bi_scores = calibrate_model(model, tokenizer, calib_texts, device=device, logger=logger)
+    cov_mlp, cov_q, cov_k, cov_x, bi_scores = calibrate_model(
+        model, tokenizer, calib_texts, device=device, logger=logger
+    )
     # ----------------------------
     # Step 2: Allocate Layer-wise Sparsity from BI Scores
     # ----------------------------
     logger.info("Allocating layer sparsity...")
     layer_keep_ratios = allocate_global_sparsity(
-        bi_scores,
-        config,
-        target_keep_ratio=args.compression_ratio,
-        temperature=1.0
+        bi_scores, config, target_keep_ratio=args.compression_ratio, temperature=1.0
     )
 
     # ----------------------------
@@ -104,7 +109,11 @@ def main():
     compressed_model = model
 
     # Extract config parameters
-    n_layers = getattr(config, "n_layer", None) or getattr(config, "num_hidden_layers", None) or getattr(config, "num_layers", None)
+    n_layers = (
+        getattr(config, "n_layer", None)
+        or getattr(config, "num_hidden_layers", None)
+        or getattr(config, "num_layers", None)
+    )
     n_heads = getattr(config, "n_head", None) or getattr(config, "num_attention_heads", None)
     d_model = getattr(config, "hidden_size", None) or getattr(config, "dim", None)
     head_dim = d_model // n_heads
@@ -123,7 +132,7 @@ def main():
         keep_ratios=layer_keep_ratios,
         rank=None,
         ridge_lambda=ridge_lambda,
-        logger=logger
+        logger=logger,
     )
 
     compress_qk(
@@ -135,12 +144,12 @@ def main():
         n_heads=n_heads,
         head_dim=head_dim,
         ridge_lambda=ridge_lambda,
-        logger=logger
+        logger=logger,
     )
 
     compress_vo(
         model=compressed_model,
-        cov=None,
+        cov=cov_x,
         keep_ratios=layer_keep_ratios,
         rank=None,
         n_layers=n_layers,
@@ -149,9 +158,8 @@ def main():
         ridge_lambda=ridge_lambda,
         min_rank=64,
         max_condition_number=1e3,
-        logger=logger
+        logger=logger,
     )
-
 
     # ----------------------------
     # Save Final Compressed Model

@@ -1,6 +1,7 @@
-import os
-import torch
 import logging
+import os
+
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger("MoDeGPT")
@@ -8,7 +9,7 @@ logger = logging.getLogger("MoDeGPT")
 
 def load_model(model_name: str, device: int = 0):
     """
-    Load the original HuggingFace model and tokenizer, 
+    Load the original HuggingFace model and tokenizer,
     using float16 precision and specifying an explicit CUDA device.
     Do not use device_map='auto' to ensure stable loading.
     """
@@ -36,9 +37,11 @@ def load_model(model_name: str, device: int = 0):
         raise
 
 
-def save_model(model: torch.nn.Module, tokenizer, save_dir: str, source_model_name: str):
+def save_model(
+    model: torch.nn.Module, tokenizer, save_dir: str, source_model_name: str
+):
     """
-    Save the compressed model and tokenizer without changing the model structure, 
+    Save the compressed model and tokenizer without changing the model structure,
     only saving the weights.
     """
     try:
@@ -61,7 +64,7 @@ def save_model(model: torch.nn.Module, tokenizer, save_dir: str, source_model_na
 
 def reload_compressed_model(model_dir: str, device: int = 0):
     """
-    Reload the compressed model and tokenizer, 
+    Reload the compressed model and tokenizer,
     assuming that the model structure remains unchanged and only the parameters have been compressed.
     """
     try:
@@ -69,7 +72,9 @@ def reload_compressed_model(model_dir: str, device: int = 0):
         tokenizer_source_path = os.path.join(model_dir, "tokenizer_source.txt")
 
         if not os.path.exists(tokenizer_source_path):
-            raise FileNotFoundError("Missing tokenizer_source.txt. Cannot reload tokenizer.")
+            raise FileNotFoundError(
+                "Missing tokenizer_source.txt. Cannot reload tokenizer."
+            )
 
         with open(tokenizer_source_path, "r") as f:
             tokenizer_source = f.read().strip()
