@@ -107,7 +107,8 @@ def calibrate_model(model, tokenizer, texts, device="cpu", logger=None):
                 x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
                 x_out = x_out.view(-1, x_out.shape[-1])
 
-                cov_x_list[l] += x_in.T @ x_in
+                x_in_cpu = x_in.to(device="cpu")
+                cov_x_list[l] += x_in_cpu.T @ x_in_cpu
 
                 valid_mask = (x_in.norm(dim=1) > 0) & (x_out.norm(dim=1) > 0)
                 if valid_mask.any():
