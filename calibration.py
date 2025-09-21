@@ -1,8 +1,9 @@
 import torch
 from torch.nn.functional import cosine_similarity
+from torch.types import Tensor
 
 
-def calibrate_model(model, tokenizer, texts, device="cpu", logger=None):
+def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logger=None):
     config = model.config
     n_layers = (
         getattr(config, "n_layer", None)
@@ -101,7 +102,7 @@ def calibrate_model(model, tokenizer, texts, device="cpu", logger=None):
             outputs = model(**inputs, output_hidden_states=True)
             hidden_states = outputs.hidden_states
             for l in range(n_layers):
-                x_in = hidden_states[l].detach().to(torch.float32)  # [B, T, D]
+                x_in: Tensor = hidden_states[l].detach().to(torch.float32)  # [B, T, D]
                 x_out = hidden_states[l + 1].detach().to(torch.float32)  # [B, T, D]
 
                 x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]

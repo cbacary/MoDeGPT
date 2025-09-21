@@ -59,6 +59,9 @@ def main():
     parser.add_argument("--eval_size", type=str, default="32")
     parser.add_argument("--output_dir", type=str, default="compressed_output")
     parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--skip", type=str, default="")
+    parser.add_argument("--local_model_path", type=str, default="")
+
     args = parser.parse_args()
 
     # ----------------------------
@@ -114,10 +117,14 @@ def main():
         or getattr(config, "num_hidden_layers", None)
         or getattr(config, "num_layers", None)
     )
-    n_heads = getattr(config, "n_head", None) or getattr(config, "num_attention_heads", None)
+    n_heads = getattr(config, "n_head", None) or getattr(
+        config, "num_attention_heads", None
+    )
     d_model = getattr(config, "hidden_size", None) or getattr(config, "dim", None)
     head_dim = d_model // n_heads
-    logger.info(f"n_layers={n_layers}, n_heads={n_heads}, d_model={d_model}, head_dim={head_dim}")
+    logger.info(
+        f"n_layers={n_layers}, n_heads={n_heads}, d_model={d_model}, head_dim={head_dim}"
+    )
 
     # ----------------------------
     # Step 4: Apply MoDeGPT Compression (Type I–III)
@@ -126,26 +133,46 @@ def main():
 
     ridge_lambda = 1e-2  # or expose as argparse argument
 
-    compress_mlp(
-        model=compressed_model,
-        cov=cov_mlp,
-        keep_ratios=layer_keep_ratios,
-        rank=None,
-        ridge_lambda=ridge_lambda,
-        logger=logger,
-    )
+    skip, local_path = args.skip, args.local_model_path
+    if skip and local_path:
+        compressed_model = load_model(local_path, device=device)
 
-    compress_qk(
-        model=compressed_model,
-        cov=(cov_q, cov_k),
-        keep_ratios=layer_keep_ratios,
-        rank=None,
-        n_layers=n_layers,
-        n_heads=n_heads,
-        head_dim=head_dim,
-        ridge_lambda=ridge_lambda,
-        logger=logger,
-    )
+    if "mlp" not in skip:
+        compress_mlp(
+            model=compressed_model,
+            cov=cov_mlp,
+            keep_ratios=layer_keep_ratios,
+            rank=None,
+            ridge_lambda=ridge_lambda,
+            logger=logger,
+        )
+
+        save_model(
+            compressed_model,
+            tokenizer,
+            save_dir=args.output_dir,
+            source_model_name=f"{args.model}--mlp",
+        )
+
+    if "qk" not in skip:
+        compress_qk(
+            model=compressed_model,
+            cov=(cov_q, cov_k),
+            keep_ratios=layer_keep_ratios,
+            rank=None,
+            n_layers=n_layers,
+            n_heads=n_heads,
+            head_dim=head_dim,
+            ridge_lambda=ridge_lambda,
+            logger=logger,
+        )
+
+        save_model(
+            compressed_model,
+            tokenizer,
+            save_dir=args.output_dir,
+            source_model_name=f"{args.model}--qk",
+        )
 
     compress_vo(
         model=compressed_model,
@@ -174,11 +201,17 @@ def main():
     # Reload for Evaluation
     # ----------------------------
     logger.info("Reloading compressed model for evaluation...")
-    compressed_model, tokenizer = reload_compressed_model(args.output_dir, device=device)
+    compressed_model, tokenizer = reload_compressed_model(
+        args.output_dir, device=device
+    )
 
-    compressed_ppl = compute_perplexity(compressed_model, tokenizer, eval_texts, device=device)
+    compressed_ppl = compute_perplexity(
+        compressed_model, tokenizer, eval_texts, device=device
+    )
     if not math.isfinite(compressed_ppl):
-        logger.warning("⚠ Compressed model perplexity is NaN or Inf! Compression may have failed.")
+        logger.warning(
+            "⚠ Compressed model perplexity is NaN or Inf! Compression may have failed."
+        )
     logger.info(f"Compressed model perplexity on WikiText2: {compressed_ppl:.2f}")
 
     # # ----------------------------
