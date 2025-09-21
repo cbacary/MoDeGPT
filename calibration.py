@@ -52,11 +52,7 @@ def calibrate_model(model, tokenizer, texts, device="cpu", logger=None):
         [torch.zeros(head_dim, head_dim, dtype=torch.float64) for _ in range(n_heads)]
         for _ in range(n_layers)
     ]
-    cov_x_list = [
-        torch.zeros(d_model, d_model, dtype=torch.float64)
-        for _ in range(n_heads)
-        for _ in range(n_layers)
-    ]
+    cov_x_list = [torch.zeros(d_model, d_model, dtype=torch.float64) for _ in range(n_layers)]
 
     bi_scores = [0.0 for _ in range(n_layers)]
     bi_counts = [0 for _ in range(n_layers)]
