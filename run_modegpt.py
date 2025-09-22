@@ -10,9 +10,9 @@ from datasets import load_dataset
 from calibration import calibrate_model
 from compression_type1 import compress_mlp
 from compression_type2 import compress_qk
-from compression_type3 import compress_vo
 
-# from compression_type3_cc import compress_vo
+# from compression_type3 import compress_vo
+from compression_type3_cc import compress_vo
 from evaluation import compute_perplexity
 from model_utils import load_model, reload_compressed_model, save_model
 from sparsity_alloc import allocate_global_sparsity
@@ -61,6 +61,8 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--skip", type=str, default="")
     parser.add_argument("--local_model_path", type=str, default="")
+    parser.add_argument("--load_calibs_from", type=str, default="")
+    parser.add_argument("--calibs_save_path", type=str, default="")
 
     args = parser.parse_args()
 
@@ -86,13 +88,34 @@ def main():
     baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
     logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
 
-    # ----------------------------
-    # Step 1: Calibration
-    # ----------------------------
-    logger.info("Calibrating model...")
-    cov_mlp, cov_q, cov_k, cov_x, bi_scores = calibrate_model(
-        model, tokenizer, calib_texts, device=device, logger=logger
-    )
+    if not args.load_calibs_from:
+        # ----------------------------
+        # Step 1: Calibration
+        # ----------------------------
+        logger.info("Calibrating model...")
+        cov_mlp, cov_q, cov_k, cov_x, bi_scores = calibrate_model(
+            model, tokenizer, calib_texts, device=device, logger=logger
+        )
+    else:
+        covs = torch.load(args.load_calibs_from)
+
+        cov_mlp = covs["cov_mlp"]
+        cov_q = covs["cov_q"]
+        cov_k = covs["cov_k"]
+        cov_x = covs["cov_x"]
+        bi_scores = covs["bi_scores"]
+
+    if args.calibs_save_path:
+        covs = {
+            "cov_mlp": cov_mlp,
+            "cov_q": cov_q,
+            "cov_k": cov_k,
+            "cov_x": cov_x,
+            "bi_scores": bi_scores,
+        }
+
+        torch.save(covs, args.calibs_save_path)
+
     # ----------------------------
     # Step 2: Allocate Layer-wise Sparsity from BI Scores
     # ----------------------------
@@ -135,7 +158,7 @@ def main():
 
     skip, local_path = args.skip, args.local_model_path
     if skip and local_path:
-        compressed_model = load_model(local_path, device=device)
+        compressed_model, tokenizer, config = load_model(local_path, device=device)
 
     if "mlp" not in skip:
         compress_mlp(
@@ -150,8 +173,8 @@ def main():
         save_model(
             compressed_model,
             tokenizer,
-            save_dir=args.output_dir,
-            source_model_name=f"{args.model}--mlp",
+            save_dir=f"{args.output_dir}--mlp",
+            source_model_name=args.model,
         )
 
     if "qk" not in skip:
@@ -170,8 +193,8 @@ def main():
         save_model(
             compressed_model,
             tokenizer,
-            save_dir=args.output_dir,
-            source_model_name=f"{args.model}--qk",
+            save_dir=f"{args.output_dir}--qk",
+            source_model_name=args.model,
         )
 
     compress_vo(
@@ -183,7 +206,7 @@ def main():
         n_heads=n_heads,
         head_dim=head_dim,
         ridge_lambda=ridge_lambda,
-        min_rank=64,
+        # min_rank=64,
         max_condition_number=1e3,
         logger=logger,
     )
@@ -192,7 +215,9 @@ def main():
     # Save Final Compressed Model
     # ----------------------------
     logger.info("Saving compressed model...")
-    save_model(model, tokenizer, args.output_dir, source_model_name=args.model)
+    save_model(
+        compressed_model, tokenizer, args.output_dir, source_model_name=args.model
+    )
 
     del compressed_model
     torch.cuda.empty_cache()

@@ -1,16 +1,29 @@
 # compression_type2.py
 
 
-import torch
 import logging
+from logging import Logger
+
+import torch
 
 logger = logging.getLogger("MoDeGPT")
 
+
 @torch.no_grad()
-def compress_qk(model, cov, keep_ratios, rank=None, n_layers=None, n_heads=None, head_dim=None, ridge_lambda=1e-2, logger=None):
+def compress_qk(
+    model,
+    cov,
+    keep_ratios,
+    rank=None,
+    n_layers=None,
+    n_heads=None,
+    head_dim=None,
+    ridge_lambda=1e-2,
+    logger: Logger = None,
+):
     """
     MoDeGPT Type-II Compression (Q/K): Stable interpolation version using
-    MoDeGPT CR scores (||C_q^{1/2}[:,i]|| * ||C_k^{1/2}[:,i]||), 
+    MoDeGPT CR scores (||C_q^{1/2}[:,i]|| * ||C_k^{1/2}[:,i]||),
     followed by row reconstruction (your original working logic).
     """
     cov_q_list, cov_k_list = cov  # List[List[Tensor]] for Q and K respectively
@@ -29,7 +42,9 @@ def compress_qk(model, cov, keep_ratios, rank=None, n_layers=None, n_heads=None,
             except AttributeError:
                 try:
                     block = model.transformer.h[i]  # GPT (unsupported)
-                    raise NotImplementedError("GPT packed QKV not supported in Type-II compression.")
+                    raise NotImplementedError(
+                        "GPT packed QKV not supported in Type-II compression."
+                    )
                 except AttributeError:
                     block = model.model.layers[i]  # LLaMA
                     W_q = block.self_attn.q_proj.weight
@@ -52,7 +67,11 @@ def compress_qk(model, cov, keep_ratios, rank=None, n_layers=None, n_heads=None,
                 scores = norms_q * norms_k
 
                 topk = torch.topk(scores, k=rank_i, largest=True).indices
-                rest = torch.tensor([j for j in range(head_dim) if j not in topk], dtype=torch.long, device=topk.device)
+                rest = torch.tensor(
+                    [j for j in range(head_dim) if j not in topk],
+                    dtype=torch.long,
+                    device=topk.device,
+                )
 
                 # === Q: row reconstruction
                 C_q_JJ = C_q[topk][:, topk]
@@ -81,8 +100,11 @@ def compress_qk(model, cov, keep_ratios, rank=None, n_layers=None, n_heads=None,
                 W_k[h_start:h_end, :].data.copy_(W_k_new.to(W_k.dtype).to(W_k.device))
 
             if logger:
-                logger.info(f"[QK] ✅ Layer {i}: compressed to rank {rank_i} per head (CR-score + interpolation)")
+                logger.info(
+                    f"[QK] ✅ Layer {i}: compressed to rank {rank_i} per head (CR-score + interpolation)"
+                )
 
         except Exception as e:
             if logger:
+                logger.error("Error: %s", e, exc_info=True)
                 logger.warning(f"[QK] Compression failed at layer {i}: {e}")

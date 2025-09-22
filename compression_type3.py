@@ -55,15 +55,21 @@ def compress_vo(
                 cond = torch.linalg.cond(C_JJ).item()
                 if cond > max_condition_number:
                     if logger:
-                        logger.warning(f"[VO] Layer {i} Head {h}: cond={cond:.1e}, skipping")
+                        logger.warning(
+                            f"[VO] Layer {i} Head {h}: cond={cond:.1e}, skipping"
+                        )
                     continue
 
                 S = C_reg[:, :rank_i] @ torch.linalg.pinv(C_JJ)
                 V_proj = S.T @ V_h
                 O_proj = O_h @ S
 
-                V_new = torch.zeros((head_dim, V_h.shape[1]), device="cuda", dtype=torch.float32)
-                O_new = torch.zeros((O_h.shape[0], head_dim), device="cuda", dtype=torch.float32)
+                V_new = torch.zeros(
+                    (head_dim, V_h.shape[1]), device="cuda", dtype=torch.float32
+                )
+                O_new = torch.zeros(
+                    (O_h.shape[0], head_dim), device="cuda", dtype=torch.float32
+                )
                 V_new[:rank_i, :] = V_proj
                 O_new[:, :rank_i] = O_proj
 
@@ -84,16 +90,27 @@ def compress_vo(
 # SVD Version, cause ppl explosion:
 
 
-# import torch
 # import logging
+
+# import torch
 
 # logger = logging.getLogger("MoDeGPT")
 
+
 # @torch.no_grad()
-# def compress_vo(model, cov=None, keep_ratios=None, rank=None,
-#                 n_layers=None, n_heads=None, head_dim=None,
-#                 ridge_lambda=1e-2, min_rank=64, max_condition_number=1e3,
-#                 logger=None):
+# def compress_vo(
+#     model,
+#     cov=None,
+#     keep_ratios=None,
+#     rank=None,
+#     n_layers=None,
+#     n_heads=None,
+#     head_dim=None,
+#     ridge_lambda=1e-2,
+#     min_rank=64,
+#     max_condition_number=1e3,
+#     logger=None,
+# ):
 #     """
 #     MoDeGPT Type-III VO Compression: SVD on A = sqrt(C) · V · O,
 #     with full-size reconstruction and shape-safe overwrite.
@@ -135,7 +152,9 @@ def compress_vo(
 #                 cond = torch.linalg.cond(C_JJ).item()
 #                 if cond > max_condition_number:
 #                     if logger:
-#                         logger.warning(f"[VO] Layer {i} Head {h}: cond={cond:.1e}, skipping")
+#                         logger.warning(
+#                             f"[VO] Layer {i} Head {h}: cond={cond:.1e}, skipping"
+#                         )
 #                     continue
 
 #                 # Step 2: Cholesky decomposition
@@ -146,19 +165,23 @@ def compress_vo(
 
 #                 # Step 4: Truncated SVD
 #                 U, S, Vh = torch.linalg.svd(A, full_matrices=False)
-#                 U_k = U[:, :rank_i]       # [Hd, r]
-#                 S_k = S[:rank_i]          # [r]
-#                 V_k = Vh[:rank_i, :]      # [r, Hd]
+#                 U_k = U[:, :rank_i]  # [Hd, r]
+#                 S_k = S[:rank_i]  # [r]
+#                 V_k = Vh[:rank_i, :]  # [r, Hd]
 #                 sqrt_S = torch.diag(torch.sqrt(S_k))  # [r, r]
 
 #                 # Step 5: Back out V_proj, O_proj
 #                 V_proj = torch.cholesky_solve(U_k @ sqrt_S, sqrt_C)  # [Hd, r]
-#                 O_proj = (sqrt_S @ V_k).T                            # [Hd, r]
+#                 O_proj = (sqrt_S @ V_k).T  # [Hd, r]
 
 #                 # Step 6: Full-size reconstruction
-#                 V_new = torch.zeros((head_dim, V_h.shape[1]), device=V_h.device, dtype=V_h.dtype)  # [Hd, D]
-#                 O_new = torch.zeros((O_h.shape[0], head_dim), device=O_h.device, dtype=O_h.dtype)  # [D, Hd]
-#                 V_new[:rank_i, :] = V_proj.T.to(dtype=V_new.dtype)    # [r, D]
+#                 V_new = torch.zeros(
+#                     (head_dim, V_h.shape[1]), device=V_h.device, dtype=V_h.dtype
+#                 )  # [Hd, D]
+#                 O_new = torch.zeros(
+#                     (O_h.shape[0], head_dim), device=O_h.device, dtype=O_h.dtype
+#                 )  # [D, Hd]
+#                 V_new[:rank_i, :] = V_proj.T.to(dtype=V_new.dtype)  # [r, D]
 #                 O_new[:, :rank_i] = O_h @ O_proj.to(dtype=O_new.dtype)  # [D, r]
 
 #                 # Step 7: Writeback

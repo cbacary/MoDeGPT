@@ -3,14 +3,18 @@ from torch.nn.functional import cosine_similarity
 from torch.types import Tensor
 
 
-def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logger=None):
+def calibrate_model(
+    model: torch.nn.Module, tokenizer, texts, device="cpu", logger=None
+):
     config = model.config
     n_layers = (
         getattr(config, "n_layer", None)
         or getattr(config, "num_hidden_layers", None)
         or getattr(config, "num_layers", None)
     )
-    n_heads = getattr(config, "n_head", None) or getattr(config, "num_attention_heads", None)
+    n_heads = getattr(config, "n_head", None) or getattr(
+        config, "num_attention_heads", None
+    )
     d_model = getattr(config, "hidden_size", None) or getattr(config, "dim", None)
     head_dim = d_model // n_heads
 
@@ -53,7 +57,10 @@ def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logg
         [torch.zeros(head_dim, head_dim, dtype=torch.float64) for _ in range(n_heads)]
         for _ in range(n_layers)
     ]
-    cov_x_list = [torch.zeros(d_model, d_model, dtype=torch.float64) for _ in range(n_layers)]
+    # correlation input for type 3 compression, with d_h x d_h shape (hidden dimension x hidden dimension)
+    cov_x_list = [
+        torch.zeros(d_model, d_model, dtype=torch.float64) for _ in range(n_layers)
+    ]
 
     bi_scores = [0.0 for _ in range(n_layers)]
     bi_counts = [0 for _ in range(n_layers)]
@@ -62,15 +69,21 @@ def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logg
     for i, block in enumerate(transformer_blocks):
         if arch == "gpt":
             handles.append(
-                block.mlp.c_fc.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
+                block.mlp.c_fc.register_forward_hook(
+                    _make_fc_hook(i, cov_mlp_list, logger)
+                )
             )
             handles.append(
                 block.attn.c_attn.register_forward_hook(
-                    _make_attn_hook(i, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger)
+                    _make_attn_hook(
+                        i, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger
+                    )
                 )
             )
         elif arch == "opt":
-            handles.append(block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger)))
+            handles.append(
+                block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
+            )
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
                     _make_proj_hook(i, cov_q_list, n_heads, head_dim, logger)
@@ -83,7 +96,9 @@ def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logg
             )
         elif arch == "llama":
             handles.append(
-                block.mlp.gate_proj.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
+                block.mlp.gate_proj.register_forward_hook(
+                    _make_fc_hook(i, cov_mlp_list, logger)
+                )
             )
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
@@ -97,7 +112,9 @@ def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logg
             )
 
     for text in texts:
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=2048).to(device)
+        inputs = tokenizer(
+            text, return_tensors="pt", truncation=True, max_length=2048
+        ).to(device)
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
             hidden_states = outputs.hidden_states
@@ -114,7 +131,9 @@ def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logg
                 valid_mask = (x_in.norm(dim=1) > 0) & (x_out.norm(dim=1) > 0)
                 if valid_mask.any():
                     cos_sim = (
-                        cosine_similarity(x_in[valid_mask], x_out[valid_mask], dim=1).mean().item()
+                        cosine_similarity(x_in[valid_mask], x_out[valid_mask], dim=1)
+                        .mean()
+                        .item()
                     )
                     bi_scores[l] += 1.0 - cos_sim
                 else:
@@ -142,8 +161,14 @@ def calibrate_model(model: torch.nn.Module, tokenizer, texts, device="cpu", logg
 def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
     def hook(module, inp, out):
         try:
-            act = torch.nn.functional.gelu(out.to(dtype=torch.float32))  # GELU activation function
-            H = act.detach().to(dtype=torch.float64, device="cpu").view(-1, act.size(-1))
+            act = torch.nn.functional.gelu(
+                out.to(dtype=torch.float32)
+            )  # GELU activation function
+            H = (
+                act.detach()
+                .to(dtype=torch.float64, device="cpu")
+                .view(-1, act.size(-1))
+            )
             cov_mlp_list[layer_idx] += H.T @ H
         except Exception as e:
             if logger:
@@ -152,7 +177,9 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
     return hook
 
 
-def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger=None):
+def _make_attn_hook(
+    layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger=None
+):
     def hook(module, inp, out):
         try:
             out = out.detach().to(dtype=torch.float64, device="cpu")
