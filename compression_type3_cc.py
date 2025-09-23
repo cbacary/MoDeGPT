@@ -1,6 +1,7 @@
 import logging
 
 import torch
+from scipy.linalg import sqrtm
 from torch.types import Tensor
 
 logger = logging.getLogger("MoDeGPT")
@@ -31,8 +32,15 @@ def compress_vo(
         _C = cov[layer].to(device="cuda")
         C = _C + torch.eye(_C.shape[0], device="cuda") * ridge_lambda
 
-        sqrt_C = torch.linalg.cholesky(C).float()
-        inv_sqrt_C = torch.linalg.inv(sqrt_C).T.float()
+        # === This is the most computationally exspensive task ======
+        # Can possible make cov_x a numpy array from the beginning to reduce this
+        C_np = C.detach().cpu().numpy()  # should already be on cpu but just in case
+        sqrt_C_np = sqrtm(C_np).real
+        sqrt_C = torch.from_numpy(sqrt_C_np).to(dtype=torch.float32, device=C.device)
+        inv_sqrt_C = torch.linalg.inv(sqrt_C).float()
+        # ============================================================
+
+        # sqrt_C = torch.linalg.cholesky(C).float()
 
         try:
             try:
@@ -70,16 +78,8 @@ def compress_vo(
             U_p, _S_p, V_p = torch.linalg.svd(A, full_matrices=False)
             S_p = torch.diag(_S_p)
 
-            print(f"Shape V_p {V_p.shape}")
-            print(f"Shape S_p {S_p.shape}")
-            print(f"Shape U_p {U_p.shape}")
-            print(f"Shape U {U.shape}")
-
             compressed_v = (inv_sqrt_C @ U @ U_p)[:, :rank_i]  # [dh, r]
             compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]  # [r, r]
-
-            print(f"Shape compressed_v {compressed_v.shape}")
-            print(f"Shape compressed_o {compressed_o.shape}")
 
             V_new = torch.zeros_like(V_head).to(dtype=torch.float32, device="cuda")
             O_new = torch.zeros_like(O_head).to(dtype=torch.float32, device="cuda")
@@ -94,10 +94,6 @@ def compress_vo(
                 O_new.to(dtype=W_o.dtype, device=W_o.device)
             )
 
-            print(f"Shape W_v_head {V_head.shape}")
-            print(f"Shape W_o_head {O_head.shape}")
-            print(f"Shape compressed_v {compressed_v.shape}")
-            print(f"Shape compressed_o {compressed_o.shape}")
             # except Exception as e:
             #     if logger:
             #         logger.warning(f"[VO] Layer {i} Head {h}: compression failed: {e}")
