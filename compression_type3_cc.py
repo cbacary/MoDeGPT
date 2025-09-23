@@ -1,8 +1,9 @@
 import logging
 
 import torch
-from scipy.linalg import sqrtm
 from torch.types import Tensor
+
+from compression_utils import sqrt_M
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -26,17 +27,8 @@ def compress_vo(
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
         rank_i = max(min_rank, min(rank_i, head_dim))
 
-        # this regularizes C so that we dont get the positive definite error
-        # torch.eye returns a diagnol with all 1's,
-        # this multiplied by ridge_lamda and added to C will make C slightly larger to not get this err
-        _C = cov[layer].to(device="cpu")
-        C = _C + torch.eye(_C.shape[0], device="cpu") * ridge_lambda
-
-        # === This is the most computationally exspensive task ======
-        # Can possible make cov_x a numpy array from the beginning to reduce this
-        C_np = C.detach().cpu().numpy()  # should already be on cpu but just in case
-        sqrt_C_np = sqrtm(C_np).real
-        sqrt_C = torch.from_numpy(sqrt_C_np).to(dtype=torch.float32, device="cuda")
+        C = cov[layer].to(device="cuda")
+        sqrt_C = sqrt_M(C).float()
         inv_sqrt_C = torch.linalg.inv(sqrt_C).float()
         # ============================================================
 
