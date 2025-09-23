@@ -1,6 +1,9 @@
+import logging
 import math
 
 import torch
+
+logger = logging.getLogger("MoDeGPT")
 
 
 @torch.no_grad()

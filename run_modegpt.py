@@ -9,7 +9,9 @@ from datasets import load_dataset
 
 from calibration import calibrate_model
 from compression_type1 import compress_mlp
-from compression_type2 import compress_qk
+
+# from compression_type2 import compress_qk
+from compression_type2_cc import compress_qk
 
 # from compression_type3 import compress_vo
 from compression_type3_cc import compress_vo
