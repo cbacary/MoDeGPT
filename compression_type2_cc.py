@@ -75,11 +75,15 @@ def compress_qk(
                     dtype=torch.uint8
                 )
 
+                topk = torch.tensor(
+                    [1 if j in topk else 0 for j in range(head_dim)]
+                ).to(dtype=torch.bool, device="cuda")
+
                 Q_head: Tensor = W_q[h_start:h_end, :]
                 K_head: Tensor = W_k[:, h_start:h_end]
 
-                S_k = torch.zeros_like(Q_head)
-                S_k[:, topk] = 1
+                # S_k = torch.zeros_like(Q_head)
+                # S_k[:, topk] = 1
 
                 Q_new = torch.zeros_like(Q_head).to(
                     dtype=Q_head.dtype, device=Q_head.device
@@ -88,11 +92,11 @@ def compress_qk(
                     dtype=K_head.dtype, device=K_head.device
                 )
 
-                Q_new[:, :] = Q_head @ S_k
-                K_new[:, :] = S_k.T @ K_head
+                # Q_new[:, :] = Q_head @ S_k
+                # K_new[:, :] = S_k.T @ K_head
 
-                # Q_new[topk, :] = Q_head[topk, :]
-                # K_new[:, topk] = K_head[:, topk]
+                Q_new[topk, :] = Q_head[topk, :]
+                K_new[:, topk] = K_head[:, topk]
 
                 Q_new = Q_new.to(dtype=W_q.dtype, device=W_q.device)
                 K_new = K_new.to(dtype=W_k.dtype, device=W_k.device)
