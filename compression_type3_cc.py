@@ -56,46 +56,41 @@ def compress_vo(
 
             # try:
             V_head = (
-                W_v[:, head_start_idx:head_end_idx].clone().float().to("cuda")
+                W_v[head_start_idx:head_end_idx, :].clone().float().to("cuda")
             )  # [dh x k]
             O_head = (
-                W_o[head_start_idx:head_end_idx, :].clone().float().to("cuda")
+                W_o[:, head_start_idx:head_end_idx].clone().float().to("cuda")
             )  # [k x dh]
 
-            U, _S, V = torch.linalg.svd(sqrt_C @ V_head, full_matrices=False)
+            U, _S, V = torch.linalg.svd(sqrt_C @ V_head.T, full_matrices=False)
 
             S = torch.diag(_S)  # take diag thus S: (head_dim x head_dim)
 
-            A = S @ V @ O_head
+            A = S @ V @ O_head.T
             U_p, _S_p, V_p = torch.linalg.svd(A, full_matrices=False)
             S_p = torch.diag(_S_p)
 
             print(f"Shape V_p {V_p.shape}")
             print(f"Shape S_p {S_p.shape}")
+            print(f"Shape U_p {U_p.shape}")
+            print(f"Shape U {U.shape}")
 
-            # temp_v = inv_sqrt_C @ U @ U_p
-            # compressed_v = temp_v[:, :rank_i]
-            # compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
+            compressed_v = (inv_sqrt_C @ U @ U_p)[:, :rank_i]  # [dh, r]
+            compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]  # [r, r]
 
-            compressed_v = inv_sqrt_C @ U @ U_p[:, :rank_i]
-            compressed_o = (
-                S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
-            )  # POTENTIALY HAVE TO TRANSPOSE V_p
+            print(f"Shape compressed_v {compressed_v.shape}")
+            print(f"Shape compressed_o {compressed_o.shape}")
 
-            V_new = torch.zeros(
-                (V_head.shape[0], head_dim), device="cuda", dtype=torch.float32
-            )
-            O_new = torch.zeros(
-                (head_dim, O_head.shape[1]), device="cuda", dtype=torch.float32
-            )
+            V_new = torch.zeros_like(V_head).to(dtype=torch.float32, device="cuda")
+            O_new = torch.zeros_like(O_head).to(dtype=torch.float32, device="cuda")
 
-            V_new[:, :rank_i] = compressed_v
-            O_new[:rank_i, :] = compressed_o
+            V_new[:rank_i, :] = compressed_v.T
+            O_new[:, :rank_i] = compressed_o.T
 
-            W_v[:, head_start_idx:head_end_idx].data.copy_(
+            W_v[head_start_idx:head_end_idx, :].data.copy_(
                 V_new.to(dtype=W_v.dtype, device=W_v.device)
             )
-            W_o[head_start_idx:head_end_idx, :].data.copy_(
+            W_o[:, head_start_idx:head_end_idx].data.copy_(
                 O_new.to(dtype=W_o.dtype, device=W_o.device)
             )
 
