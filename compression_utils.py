@@ -2,9 +2,10 @@ import torch
 from torch.types import Tensor
 
 
+@torch.no_grad
 def sqrt_M(M: Tensor, ridge_lambda=1e-4) -> Tensor:
     """
-    Warning: Be weary of input being torch.float32, may be because ridge lambda was too low,
+    Warning: Be weary of input being of precision torch.float64, may be because ridge lambda was too low,
     but this broke the result in some cases.
     The following is the code I originally used for sqrt_M. Its MUCH slower.
     However, note the following marginal ppl differerence against opt-1.3b WikiText2:
