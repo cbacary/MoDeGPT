@@ -125,6 +125,11 @@ def calibrate_model(
                 x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
                 x_out = x_out.view(-1, x_out.shape[-1])
 
+                """
+                 NOTE: This implemntation casts the correlation input to a float32
+                       Appendix specifies that it should be held a float64 until 
+                        later computations are performed.
+                """
                 x_in_cpu = x_in.to(device="cpu")
                 cov_x_list[l] += x_in_cpu.T @ x_in_cpu
 
