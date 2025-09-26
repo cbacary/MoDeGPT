@@ -36,19 +36,28 @@ def calibrate_model(
     if logger:
         logger.info(f"Detected architecture: {arch}")
 
-    cov_mlp_list = []
-    for i in range(n_layers):
+    def get_inner(transformer_block):
+        # if arch == "gpt":
+        #     n_inner = transformer_blocks.mlp.c_fc.out_features
         try:
-            # if arch == "gpt":
-            #     n_inner = transformer_blocks[i].mlp.c_fc.out_features
             if arch == "opt":
-                n_inner = transformer_blocks[i].fc1.out_features
+                n_inner = transformer_blocks.fc1.out_features
             elif arch == "llama":
-                n_inner = transformer_blocks[i].mlp.gate_proj.out_features
+                n_inner = transformer_blocks.mlp.gate_proj.out_features
         except:
             n_inner = getattr(config, "intermediate_size", 4 * d_model)
-        cov_mlp_list.append(torch.zeros(n_inner, n_inner, dtype=torch.float64))
 
+        return n_inner
+
+    # store these on the cpu otherwise big boom on gpu
+    cov_mlp_list = [
+        torch.zeros(
+            get_inner(transformer_blocks[i]),
+            get_inner(transformer_blocks[i]),
+            dtype=torch.float64,
+        )
+        for i in range(n_layers)
+    ]
     cov_q_list = [
         [torch.zeros(head_dim, head_dim, dtype=torch.float64) for _ in range(n_heads)]
         for _ in range(n_layers)
@@ -119,8 +128,8 @@ def calibrate_model(
             outputs = model(**inputs, output_hidden_states=True)
             hidden_states = outputs.hidden_states
             for l in range(n_layers):
-                x_in: Tensor = hidden_states[l].detach().to(torch.float32)  # [B, T, D]
-                x_out = hidden_states[l + 1].detach().to(torch.float32)  # [B, T, D]
+                x_in: Tensor = hidden_states[l].detach().to(torch.float64)  # [B, T, D]
+                x_out = hidden_states[l + 1].detach().to(torch.float64)  # [B, T, D]
 
                 x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
                 x_out = x_out.view(-1, x_out.shape[-1])
@@ -132,6 +141,10 @@ def calibrate_model(
                 """
                 x_in_cpu = x_in.to(device="cpu")
                 cov_x_list[l] += x_in_cpu.T @ x_in_cpu
+
+                # it was casted down before, and if it ain't broke don't fix it
+                x_in = x_in.to(dtype=torch.float32)
+                x_out = x_out.to(dtype=torch.float32)
 
                 valid_mask = (x_in.norm(dim=1) > 0) & (x_out.norm(dim=1) > 0)
                 if valid_mask.any():
@@ -165,19 +178,16 @@ def calibrate_model(
 
 def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
     def hook(module, inp, out):
-        try:
-            act = torch.nn.functional.gelu(
-                out.to(dtype=torch.float32)
-            )  # GELU activation function
-            H = (
-                act.detach()
-                .to(dtype=torch.float64, device="cpu")
-                .view(-1, act.size(-1))
-            )
-            cov_mlp_list[layer_idx] += H.T @ H
-        except Exception as e:
-            if logger:
-                logger.warning(f"[Hook] FC at layer {layer_idx} failed: {e}")
+        # try:
+        act = torch.nn.functional.gelu(
+            out.to(dtype=torch.float64, device="cpu")
+        )  # GELU activation function
+        H = act.detach().to(dtype=torch.float64, device="cpu").view(-1, act.size(-1))
+        cov_mlp_list[layer_idx] += H.T @ H
+
+    # except Exception as e:
+    #     if logger:
+    #         logger.warning(f"[Hook] FC at layer {layer_idx} failed: {e}")
 
     return hook
 

@@ -210,7 +210,6 @@ def main():
         ridge_lambda=ridge_lambda,
         # min_rank=64,
         max_condition_number=1e3,
-        logger=logger,
     )
 
     # ----------------------------

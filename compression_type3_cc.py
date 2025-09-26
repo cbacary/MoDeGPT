@@ -11,7 +11,7 @@ logger = logging.getLogger("MoDeGPT")
 @torch.no_grad()
 def compress_vo(
     model,
-    cov: list[Tensor] = None,
+    cov: list[Tensor],
     keep_ratios=None,
     rank=None,
     n_layers=None,
@@ -20,7 +20,6 @@ def compress_vo(
     ridge_lambda=1e-4,
     min_rank=16,
     max_condition_number=1e4,
-    logger=None,
 ):
     for layer in range(n_layers):
         keep_ratio = keep_ratios[layer]
@@ -28,11 +27,8 @@ def compress_vo(
         rank_i = max(min_rank, min(rank_i, head_dim))
 
         C = cov[layer].to(device="cuda")
-        sqrt_C = sqrt_M(C).float()
-        inv_sqrt_C = torch.linalg.inv(sqrt_C).float()
-        # ============================================================
-
-        # sqrt_C = torch.linalg.cholesky(C).float() -- not the right way to calculate sqrt
+        sqrt_C = sqrt_M(C)
+        inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
         try:
             W_v, W_o = get_V_O_weights(model=model, layer_idx=layer)
@@ -45,21 +41,34 @@ def compress_vo(
             head_s, head_e = h * head_dim, (h + 1) * head_dim
 
             try:
-                V_head = W_v[head_s:head_e, :].clone().float().to("cuda")
-                O_head = W_o[:, head_s:head_e].clone().float().to("cuda")
-                # V_head [Hd, D] | O_head [D, Hd]
+                # Hd = head_dims, H = hidden dimensions
+                # V_head [Hd, H], O_head [H, Hd]
+                # sqrt_C [H, H]
 
-                # V_head needs to be transposed because a tensor of (in_features, out_features) but
-                # torch stores weights as (out_features, in_features)
+                V_head = W_v[head_s:head_e, :].to(dtype=torch.float64, device="cuda")
+                O_head = W_o[:, head_s:head_e].to(dtype=torch.float64, device="cuda")
+
+                # V_head needs to be transposed because we expect a tensor of (in_features, out_features)
+                # but torch stores weights as (out_features, in_features)
                 U, _S, V = torch.linalg.svd(sqrt_C @ V_head.T, full_matrices=False)
+
+                # sqrt_C @ V_head.T [H, Hd]
+                # U [H, Hd], S [Hd, Hd], V [Hd, Hd]
 
                 S = torch.diag(_S)  # [Hd, Hd]
 
                 A = S @ V @ O_head.T  # once again transpose O_head
-                U_p, _S_p, V_p = torch.linalg.svd(A, full_matrices=False)
+                # There is marginal difference (from minimal testing) between full_matrices=False|True
+                U_p, _S_p, V_p = torch.linalg.svd(A, full_matrices=True)
+
                 S_p = torch.diag(_S_p)
 
+                # A [Hd, H]
+                # U_p [Hd, Hd], S_p [H, H], V_p [H, H]
+
+                # [H, H] @ [H, Hd] @ [Hd, H] = [H, Hd] @ [Hd, Hd] = [H, Hd]
                 compressed_v = (inv_sqrt_C @ U @ U_p)[:, :rank_i]
+                # [H, H] @ [H, H]
                 compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
 
                 V_new = torch.zeros_like(V_head).to(dtype=W_v.dtype, device=W_v.device)
