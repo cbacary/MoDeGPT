@@ -41,6 +41,7 @@ def load_calibs(model, tokenizer, texts, load_calibs_from="", calibs_save_path="
 
 
 def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
+    logger.info("Calibrating model")
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
 
     if not getattr(model.config, "output_hidden_states", False):
@@ -139,7 +140,7 @@ def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
                 )
             )
 
-    for text in texts:
+    for count, text in enumerate(texts):
         inputs = tokenizer(
             text, return_tensors="pt", truncation=True, max_length=2048
         ).to(device="cuda")
@@ -177,6 +178,7 @@ def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
                     bi_scores[l] += 1.0
 
                 bi_counts[l] += 1
+        logger.info(f"Text {count + 1} / {len(texts)} complete.")
 
     for h in handles:
         h.remove()
@@ -186,9 +188,9 @@ def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
         if count > 0:
             bi_scores[i] /= count
             cov_mlp_list[i] /= count
-            for h in range(n_heads):
-                cov_q_list[i][h] /= count
-                cov_k_list[i][h] /= count
+            # for h in range(n_heads):
+            #     cov_q_list[i][h] /= count
+            #     cov_k_list[i][h] /= count
 
     if logger:
         logger.info("Finished calibration and computed BI scores.")
@@ -197,6 +199,7 @@ def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
 
 def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
     def hook(module, inp, out):
+        #### PRETTY CONFIDENT THIS IS WRONG!!!!
         # try:
         act = torch.nn.functional.gelu(
             out.to(dtype=torch.float64, device="cpu")

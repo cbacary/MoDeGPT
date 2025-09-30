@@ -45,7 +45,7 @@ def main():
     model, tokenizer, config = load_model(args.model, device=device)
 
     logger.info("Loading calibration and evaluation texts...")
-    calib_texts = load_calibration_texts(args.calib_size)
+    calib_texts = load_calibration_texts(args.calib_size, model, tokenizer)
     eval_texts = load_eval_texts(args.eval_size)
 
     logger.info("Evaluating original model (for baseline perplexity)...")
@@ -61,7 +61,7 @@ def main():
     )
 
     layer_keep_ratios = allocate_global_sparsity(
-        bi_scores, model.config, target_keep_ratio=(1 - args.compression_ratio)
+        bi_scores, model.config, compression_ratio=args.compression_ratio
     )
 
     model.cpu()
@@ -98,7 +98,7 @@ def main():
             cov=(cov_q, cov_k),
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=slice_dims,
+            slice_dims=False,
         )
 
         save_model(
@@ -108,13 +108,21 @@ def main():
             source_model_name=args.model,
         )
 
-    compress_vo(
-        model=model,
-        cov=cov_x,
-        keep_ratios=layer_keep_ratios,
-        ridge_lambda=ridge_lambda,
-        slice_dims=slice_dims,
-    )
+    if "vo" not in skip:
+        compress_vo(
+            model=model,
+            cov=cov_x,
+            keep_ratios=layer_keep_ratios,
+            ridge_lambda=ridge_lambda,
+            slice_dims=slice_dims,
+        )
+
+        save_model(
+            model,
+            tokenizer,
+            save_dir=f"{args.output_dir}--vo",
+            source_model_name=args.model,
+        )
 
     patch_forward_OPT(
         model,

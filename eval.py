@@ -1,22 +1,53 @@
 import logging
 import math
 
+import numpy as np
 import torch
 from datasets import load_dataset
 
 logger = logging.getLogger("MoDeGPT")
 
 
-def load_calibration_texts(calib_size):
+def load_calibration_texts(calib_size, model, tokenizer):
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     texts = [t for t in dataset["train"]["text"] if len(t.strip()) > 0]
-    return texts if calib_size == "all" else texts[: int(calib_size)]
+
+    joined_texts = "\n".join(texts)
+    chunked = chunk_text(
+        model=model, tokenizer=tokenizer, long_texts=joined_texts, min_threshold=2048
+    )
+
+    return np.random.choice(chunked, size=int(calib_size), replace=False)
 
 
 def load_eval_texts(eval_size):
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     texts = [t for t in dataset["validation"]["text"] if len(t.strip()) > 0]
     return texts if eval_size == "all" else texts[: int(eval_size)]
+
+
+def chunk_text(
+    model, tokenizer, long_texts: str, stride: int = 0, min_threshold: int = 10
+):
+    input_ids = tokenizer(long_texts, truncation=False, return_tensors=None)[
+        "input_ids"
+    ]
+
+    max_length = model.config.max_position_embeddings
+
+    text_chunks = []
+
+    for i in range(0, len(input_ids), max_length - stride):
+        chunk_ids = input_ids[i : i + max_length]
+
+        if len(chunk_ids) < min_threshold:
+            logger.info("Skipping text chunk")
+            continue
+
+        decoded_chunk = tokenizer.decode(chunk_ids, skip_special_tokens=True)
+        text_chunks.append(decoded_chunk)
+
+    return text_chunks
 
 
 @torch.no_grad()
