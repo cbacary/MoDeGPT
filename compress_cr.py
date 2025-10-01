@@ -18,7 +18,7 @@ def compress_qk(
     cov,
     keep_ratios,
     rank=None,
-    ridge_lambda=1e-2,
+    ridge_lambda=1,
     slice_dims=True,
 ):
     """
@@ -60,6 +60,18 @@ def compress_qk(
 
                 C_q = cov_q_list[i][h].float().to("cuda")  # [Hd, Hd]
                 C_k = cov_k_list[i][h].float().to("cuda")  # [Hd, Hd]
+
+                if torch.isnan(C_q).any():
+                    print("Big boom problem C_q nan")
+                if torch.isinf(C_q).any():
+                    print("Big boom problem C_q inf")
+                if torch.isnan(C_k).any():
+                    print("Big boom problem C_k nan")
+                if torch.isinf(C_k).any():
+                    print("Big boom problem C_k inf")
+
+                # C_q = C_q + (ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device))
+                # C_k = C_k + (ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device))
 
                 # === Use MoDeGPT CR scores: ||C_q^{1/2}[:,i]|| * ||C_k^{1/2}[:,i]||
                 # ridge_eye = ridge_lambda * torch.eye(head_dim, device="cuda")

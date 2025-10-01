@@ -188,9 +188,9 @@ def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
         if count > 0:
             bi_scores[i] /= count
             cov_mlp_list[i] /= count
-            # for h in range(n_heads):
-            #     cov_q_list[i][h] /= count
-            #     cov_k_list[i][h] /= count
+            for h in range(n_heads):
+                cov_q_list[i][h] /= count
+                cov_k_list[i][h] /= count
 
     if logger:
         logger.info("Finished calibration and computed BI scores.")
@@ -236,18 +236,39 @@ def _make_attn_hook(
 
 
 def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, logger=None):
-    def hook(module, inp, out):
-        try:
-            proj_out = out.detach().to(dtype=torch.float64, device="cpu")
-            for h in range(n_heads):
-                h_proj = (
-                    proj_out[:, :, h * head_dim : (h + 1) * head_dim]
-                    .contiguous()
-                    .view(-1, head_dim)
-                )
-                cov_list[layer_idx][h] += h_proj.T @ h_proj
-        except Exception as e:
-            if logger:
-                logger.warning(f"[Hook] Q/K proj failed at layer {layer_idx}: {e}")
+    """
+    For this to work on LLama Models we would have to use a nonlinear function on
+        X @ W to create positional embeddings (RoPE for llama).
+
+    in paper (sigma_r denotes positional embeddings -- not relevant for OPT)
+    """
+
+    def hook(module: torch.nn.Linear, inp, out):
+        # try:
+        # proj_out = out.detach().to(dtype=torch.float64, device="cpu")
+        for h in range(n_heads):
+            weight_head = module.weight[h * head_dim : (h + 1) * head_dim, :].to(
+                torch.float64
+            )
+
+            d_inp = inp[0].view(-1, weight_head.shape[1]).to(torch.float64)
+
+            proj = d_inp @ weight_head.T
+            # act = torch.nn.functional.gelu(proj).to(device="cpu", dtype=torch.float64)
+            cov_list[layer_idx][h] += (proj.T @ proj).to(
+                device="cpu", dtype=torch.float64
+            )
+
+            # h_proj = (
+            #     proj_out[:, :, h * head_dim : (h + 1) * head_dim]
+            #     .contiguous()
+            #     .view(-1, head_dim)
+            # )
+            # act = h_proj.to(device="cpu")
+            # cov_list[layer_idx][h] += act.T @ act
+
+    # except Exception as e:
+    #     if logger:
+    #         logger.warning(f"[Hook] Q/K proj failed at layer {layer_idx}: {e}")
 
     return hook

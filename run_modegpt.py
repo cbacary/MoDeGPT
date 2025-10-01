@@ -98,7 +98,7 @@ def main():
             cov=(cov_q, cov_k),
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=False,
+            slice_dims=True,
         )
 
         save_model(
