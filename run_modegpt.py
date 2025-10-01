@@ -8,7 +8,7 @@ from calibration import load_calibs
 from compress_cr import compress_qk
 from compress_nystrom import compress_mlp
 from compress_svd import compress_vo
-from compression_utils import allocate_global_sparsity
+from compression_utils import allocate_global_sparsity, patch_forward_OPT
 from eval import compute_perplexity, load_calibration_texts, load_eval_texts
 from model_utils import load_model, save_model
 
@@ -124,9 +124,10 @@ def main():
             source_model_name=args.model,
         )
 
-    # patch_forward_OPT(
-    #     model,
-    # )
+    if "vo" not in skip:
+        patch_forward_OPT(
+            model,
+        )
     model.cuda()
     compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
     logger.info(f"Compressed model perplexity on WikiText2: {compressed_ppl:.2f}")
