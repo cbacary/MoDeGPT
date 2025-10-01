@@ -128,7 +128,7 @@ def slice_VO_dims(
         bias=True if original_o.bias is not None else False,
     )
     new_layer_O.weight.data.copy_(O_heads)
-    if original_o.bias is not None:
+    if original_o.bias is not None and bias:
         new_layer_O.bias.data.copy_(original_o.bias.data)
 
     if hasattr(self_attn, "out_proj"):
