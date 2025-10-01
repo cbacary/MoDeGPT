@@ -55,9 +55,6 @@ def slice_QK_dims(
     Q_heads = torch.cat(new_heads_Q, dim=0).to(device="cuda", dtype=torch.float16)
     K_heads = torch.cat(new_heads_K, dim=0).to(device="cuda", dtype=torch.float16)
 
-    print(f"Q_heads shape {Q_heads.shape}")
-    print(f"K_heads shape {K_heads.shape}")
-
     new_layer_Q = torch.nn.Linear(
         in_features=Q_heads.shape[1],
         out_features=Q_heads.shape[0],
@@ -109,9 +106,6 @@ def slice_VO_dims(
     V_heads = torch.cat(new_heads_V, dim=0).to(device="cuda", dtype=torch.float16)
     O_heads = torch.cat(new_heads_O, dim=1).to(device="cuda", dtype=torch.float16)
 
-    print(f"V_heads shape {V_heads.shape}")
-    print(f"O_heads shape {O_heads.shape}")
-
     new_layer_V = torch.nn.Linear(
         in_features=V_heads.shape[1],
         out_features=V_heads.shape[0],
@@ -147,9 +141,7 @@ def slice_VO_dims(
     self_attn.embed_dim = self_attn.v_proj.out_features
 
 
-def slice_gate_dims(
-    model, layer_idx: int, up_weights: Tensor, down_weights: Tensor, bias: bool
-):
+def slice_gate_dims(model, layer_idx: int, up_weights: Tensor, down_weights: Tensor, bias: bool):
     block, up, down, arch = get_gate_projs(model, layer_idx=layer_idx)
 
     new_layer_U = torch.nn.Linear(
@@ -160,7 +152,7 @@ def slice_gate_dims(
         # bias=True if up.bias is not None else False and bias,
         bias=False,
     )
-    new_layer_U.weight.data.copy_(up_weights)
+    new_layer_U.weight.data.copy_(up_weights.to(torch.float16))
     # output_features of o_proj is altered so bias is unusable
     # if up.bias is not None and bias:
     #     new_layer_U.bias.data.copy_(up.bias.data)
@@ -170,10 +162,10 @@ def slice_gate_dims(
         out_features=down_weights.shape[0],
         device="cuda",
         dtype=torch.float16,
-        bias=True if down.bias is not None else False and bias,
+        bias=True if down.bias is not None and bias else False,
         # bias=False,
     )
-    new_layer_D.weight.data.copy_(down_weights)
+    new_layer_D.weight.data.copy_(down_weights.to(torch.float16))
     if down.bias is not None and bias:
         new_layer_D.bias.data.copy_(down.bias.data)
 
@@ -233,6 +225,19 @@ def get_layer_block(model, layer_idx):
     return block
 
 
+def get_Q_K_weights(model, layer_idx):
+    if hasattr(model.model, "decoder"):
+        block = model.model.decoder.layers[layer_idx]
+    elif hasattr(model.model, "layers"):
+        block = model.model.layers[layer_idx]
+    else:
+        raise AttributeError
+
+    W_q = block.self_attn.q_proj.weight
+    W_k = block.self_attn.k_proj.weight
+    return W_q, W_k
+
+
 def get_V_O_weights(model, layer_idx):
     if hasattr(model.model, "decoder"):
         block = model.model.decoder.layers[layer_idx]
@@ -250,7 +255,6 @@ def get_V_O_weights(model, layer_idx):
 
 def allocate_global_sparsity(
     bi_scores: list[float],
-    model_config,
     compression_ratio: float,
     smoothing: float = 1.0,
 ):
@@ -278,15 +282,6 @@ def allocate_global_sparsity(
     from torch.nn.functional import softmax
 
     n_layers = len(bi_scores)
-    expected_layers = (
-        getattr(model_config, "num_hidden_layers", None)
-        or getattr(model_config, "n_layer", None)
-        or getattr(model_config, "num_layers", None)
-    )
-    if expected_layers is None or n_layers != expected_layers:
-        raise ValueError(
-            f"Mismatch between BI scores ({n_layers}) and model layers ({expected_layers})"
-        )
 
     logger.info(
         f"Allocating global sparsity using compression_ratio {compression_ratio:.4f} and temperature {smoothing}"
@@ -296,7 +291,7 @@ def allocate_global_sparsity(
     phi_avg = compression_ratio
     epsilon = smoothing
 
-    s = torch.tensor(bi_scores)
+    s = torch.tensor(bi_scores).to(torch.float64)
     phi = L * phi_avg * softmax(-s / epsilon, dim=0)
     # phi[0] = 1.0
     for count, (bi_score, sparsity) in enumerate(zip(bi_scores, phi)):

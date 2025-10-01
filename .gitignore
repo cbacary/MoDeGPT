@@ -2,3 +2,5 @@ __pycache__/
 compressed_output/
 logs/
 calibs/
+.venv/
+uv.lock

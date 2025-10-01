@@ -85,6 +85,7 @@ def compress_qk(
                 norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
                 scores = norms_q * norms_k
 
+                # NOTE TO ME LATER::: Consider dims input into topk (does it work with vector norm above)
                 topk = torch.topk(scores, k=rank_i, largest=True).indices.to(
                     dtype=torch.uint8
                 )

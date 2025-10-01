@@ -1,0 +1,13 @@
+[project]
+name = "refactormodegpt"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.6",
+]
+
+
+[tool.ruff]
+line-length = 100
