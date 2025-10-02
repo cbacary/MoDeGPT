@@ -108,6 +108,7 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
                 bias=True,
             )
         else:
+            ### ignore this part
             proj_u.weight.data.zero_()
             proj_u.weight.data[topk_selector, :] = W_u_proj.T.to(proj_u.weight)
 

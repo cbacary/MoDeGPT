@@ -98,7 +98,7 @@ def compress_qk(
                 K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
 
                 if slice_dims:
-                    Q_new = Sk.T @ Q_head
+                    Q_new = Sk.T @ Q_head  # dont trust this, gotta rethink about that
                     K_new = Sk.T @ K_head
                     new_Q_heads.append(Q_new.T)
                     new_K_heads.append(K_new.T)
@@ -114,6 +114,42 @@ def compress_qk(
 
                     W_q[h_start:h_end, :].data.copy_(Q_new)
                     W_k[h_start:h_end, :].data.copy_(K_new)
+
+                """"
+                
+                The original code from the MoDeGPT github i was originally given
+
+                topk = torch.topk(scores, k=rank_i, largest=True).indices
+                rest = torch.tensor([j for j in range(head_dim) if j not in topk], dtype=torch.long, device=topk.device)
+
+                 # === Q: row reconstruction
+                C_q_JJ = C_q[topk][:, topk]
+                ridge_q = ridge_lambda * torch.eye(rank_i, device="cuda")
+                pinv_q = torch.linalg.pinv(C_q_JJ + ridge_q)
+                alpha_q = C_q[rest][:, topk] @ pinv_q  # [|rest|, r]
+
+                W_q_h = W_q[h_start:h_end, :].float().to("cuda")  # [Hd, D]
+                W_q_new = torch.zeros_like(W_q_h)
+                W_q_new[topk, :] = W_q_h[topk, :]
+                if len(rest) > 0:
+                    W_q_new[rest, :] = alpha_q @ W_q_h[topk, :]
+                W_q[h_start:h_end, :].data.copy_(W_q_new.to(W_q.dtype).to(W_q.device))
+
+                # === K: row reconstruction
+                C_k_JJ = C_k[topk][:, topk]
+                ridge_k = ridge_lambda * torch.eye(rank_i, device="cuda")
+                pinv_k = torch.linalg.pinv(C_k_JJ + ridge_k)
+                alpha_k = C_k[rest][:, topk] @ pinv_k
+
+                W_k_h = W_k[h_start:h_end, :].float().to("cuda")  # [Hd, D]
+                W_k_new = torch.zeros_like(W_k_h)
+                W_k_new[topk, :] = W_k_h[topk, :]
+                if len(rest) > 0:
+                    W_k_new[rest, :] = alpha_k @ W_k_h[topk, :]
+                W_k[h_start:h_end, :].data.copy_(W_k_new.to(W_k.dtype).to(W_k.device))
+
+                
+                """
 
             if slice_dims:
                 slice_QK_dims(

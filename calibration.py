@@ -165,7 +165,9 @@ def __calibrate_model(
                 # logger.info(f"x_in.shape ( transformed )= {x_in.shape}")
                 # x_out = x_out.view(-1, x_out.shape[-1])
 
-                # cov_x_list[l] += (x_in.T @ x_in).to(device="cpu")
+                # cov_x_list[l] += (x_in.T @ x_in).to(device="cpu") # This is the same as below
+
+                # also tried using q_proj(x_in) but got worse results -- possibly did something wrong
 
                 query_w, key_w = get_Q_K_weights(model, l)
                 for batch_i in range(len(batch)):
@@ -215,7 +217,11 @@ def __calibrate_model(
 @torch.no_grad()
 def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
     def hook(module: torch.nn.Linear, inp, out):
-        act = torch.nn.functional.relu(out.to(dtype=torch.float64))
+        act = torch.nn.functional.relu(
+            out.to(dtype=torch.float64)
+        )  # originally using GELU (incorrect for OPT)
+        # reallly we should grab the activation function directly
+        # from the model its something like model.decoder....act_fn()
         H = act.detach().to(dtype=torch.float64).view(-1, act.size(-1))
         cov_mlp_list[layer_idx] += (H.T @ H).to(device="cpu")
 
