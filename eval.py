@@ -8,7 +8,7 @@ from datasets import load_dataset
 logger = logging.getLogger("MoDeGPT")
 
 
-def load_calibration_texts(calib_size, model, tokenizer):
+def load_calibration_texts(calib_size, model, tokenizer, batch_size: int):
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     texts = [t for t in dataset["train"]["text"] if len(t.strip()) > 0]
 
@@ -17,7 +17,17 @@ def load_calibration_texts(calib_size, model, tokenizer):
         model=model, tokenizer=tokenizer, long_texts=joined_texts, min_threshold=2048
     )
 
-    return np.random.choice(chunked, size=int(calib_size), replace=False)
+    batches = []
+    for i in range(0, int(calib_size), batch_size):
+        batches.append(
+            np.random.choice(
+                chunked,
+                size=int(batch_size),
+                replace=False,
+            ).tolist()
+        )
+
+    return batches
 
 
 def load_eval_texts(eval_size):
@@ -26,12 +36,8 @@ def load_eval_texts(eval_size):
     return texts if eval_size == "all" else texts[: int(eval_size)]
 
 
-def chunk_text(
-    model, tokenizer, long_texts: str, stride: int = 0, min_threshold: int = 10
-):
-    input_ids = tokenizer(long_texts, truncation=False, return_tensors=None)[
-        "input_ids"
-    ]
+def chunk_text(model, tokenizer, long_texts: str, stride: int = 0, min_threshold: int = 10):
+    input_ids = tokenizer(long_texts, truncation=False, return_tensors=None)["input_ids"]
 
     max_length = model.config.max_position_embeddings
 
@@ -84,9 +90,7 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
         labels = input_chunk.clone()
         attention_mask = (input_chunk != tokenizer.pad_token_id).long()
 
-        outputs = model(
-            input_ids=input_chunk, labels=labels, attention_mask=attention_mask
-        )
+        outputs = model(input_ids=input_chunk, labels=labels, attention_mask=attention_mask)
         loss = outputs.loss
 
         if not torch.isfinite(loss):
@@ -103,9 +107,7 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
 
 
 @torch.no_grad()
-def generate_text(
-    model, tokenizer, prompt: str, max_length: int = 50, device: str = "cpu"
-):
+def generate_text(model, tokenizer, prompt: str, max_length: int = 50, device: str = "cpu"):
     """
     Generate greedy decoded text from prompt.
     """

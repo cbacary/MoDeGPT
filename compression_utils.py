@@ -124,12 +124,12 @@ def slice_VO_dims(
         out_features=O_heads.shape[0],
         device="cuda",
         dtype=torch.float16,
-        # bias=False,
-        bias=True if original_o.bias is not None else False,
+        bias=False,
+        # bias=True if original_o.bias is not None else False,
     )
     new_layer_O.weight.data.copy_(O_heads)
-    if original_o.bias is not None and bias:
-        new_layer_O.bias.data.copy_(original_o.bias.data)
+    # if original_o.bias is not None and bias:
+    #     new_layer_O.bias.data.copy_(original_o.bias.data)
 
     if hasattr(self_attn, "out_proj"):
         self_attn.out_proj = new_layer_O
@@ -223,6 +223,11 @@ def get_layer_block(model, layer_idx):
         raise AttributeError
 
     return block
+
+
+def get_embedders(model):
+    decoder = model.model.decoder
+    return decoder.embed_tokens, decoder.embed_positions
 
 
 def get_Q_K_weights(model, layer_idx):

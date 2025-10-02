@@ -43,16 +43,10 @@ def patched_forward(
     new_total_v_dim = value_states.shape[-1]
     new_v_head_dim = new_total_v_dim // self.num_heads
 
-    query_states = query_states.view(bsz, -1, self.num_heads, new_head_dim).transpose(
-        1, 2
-    )
+    query_states = query_states.view(bsz, -1, self.num_heads, new_head_dim).transpose(1, 2)
 
-    key_states = key_states.view(bsz, -1, self.num_heads, new_k_head_dim).transpose(
-        1, 2
-    )
-    value_states = value_states.view(bsz, -1, self.num_heads, new_v_head_dim).transpose(
-        1, 2
-    )
+    key_states = key_states.view(bsz, -1, self.num_heads, new_k_head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, -1, self.num_heads, new_v_head_dim).transpose(1, 2)
 
     if past_key_values is not None:
         # save all key/value_states to cache to be re-used for fast auto-regressive generation
@@ -69,9 +63,7 @@ def patched_forward(
                 'eager attention. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
             )
         else:
-            attention_interface = ALL_ATTENTION_FUNCTIONS[
-                self.config._attn_implementation
-            ]
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
     attn_output, attn_weights = attention_interface(
         self,

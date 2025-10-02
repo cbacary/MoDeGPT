@@ -51,13 +51,22 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
         scores = torch.diag(s_i)
 
         topk = torch.topk(scores, k=rank_i, largest=True, dim=0).indices
+        topk_selector = torch.tensor([1 if j in topk else 0 for j in range(D_int)]).to(
+            dtype=torch.bool, device="cuda"
+        )
+
         print(f"Shape of s_i {s_i.shape}")
         print(f"Shape of scores {scores.shape}")
         print(f"Shape of topk {topk.shape}")
         Sk = torch.eye(D_int, device=C.device, dtype=C.dtype)[:, topk]  # [D_int, rank_i]
 
-        W_u = W_u.to(torch.float32).to("cuda")  # [D_int, D_h]
-        W_d = W_d.to(torch.float32).to("cuda")  # [D_h, D_int]
+        W_u = W_u.to(torch.float32).clone().to("cuda")  # [D_int, D_h]
+        W_d = W_d.to(torch.float32).clone().to("cuda")  # [D_h, D_int]
+
+        # W_u.data.zero_()
+        # W_d.data.zero_()
+
+        # W_u.data[topk_selector, :] = W_u_cloned[topk_selector, :].to(W_u.data)
 
         # W_u.T @ Sk =
         # = [D_h, D_int] @ [D_int, rank_i]
@@ -74,12 +83,19 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
         # = [rank_i, D_int] @ ( [D_int, D_int] @ [D_int, D_h] )
         # = [rank_i, D_int] @ ( [D_int, D_h] )
         # = [rank_i, D_h]
-        down_SK_proj = Sk.T @ (C @ W_d.T)
+        down_SK_proj = Sk.T @ (C @ W_d.T)  # as in paper
+        # down_SK_proj = Sk.T @ C  # modified
 
         # C_Sk_proj @ down_SK_proj =
         # = [rank_i, rank_i] @ [rank_i, D_h]
         # = [rank_i, D_h]
-        W_d_proj = C_Sk_proj @ down_SK_proj
+        W_d_proj = C_Sk_proj @ down_SK_proj  # as in paper
+
+        # [rank_i, rank_i] @ [rank_i, D_int] =
+        # = [rank_i, D_int]
+        # Sk_w_d = C_Sk_proj @ down_SK_proj  # modified
+        # print(Sk_w_d)
+        # W_d.data[:, Sk_w_d]
 
         # W_d_proj = W_d @ C @ Sk @ C_JJ_inv  # [D_h, r]
 
@@ -93,10 +109,10 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
             )
         else:
             proj_u.weight.data.zero_()
-            proj_u.weight.data[:rank_i, :] = W_u_proj.T.to(proj_u.weight)
+            proj_u.weight.data[topk_selector, :] = W_u_proj.T.to(proj_u.weight)
 
             proj_d.weight.data.zero_()
-            proj_d.weight.data[:, :rank_i] = W_d_proj.T.to(proj_d.weight)
+            proj_d.weight.data[:, topk_selector] = W_d_proj.T.to(proj_d.weight)
             # W_u.data.zero_()
             # W_u.data[:r, :] = W_u_proj.to(W_u.dtype).to(W_u.device)
 

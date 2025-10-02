@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--local_model_path", type=str, default="")
     parser.add_argument("--load_calibs_from", type=str, default="")
     parser.add_argument("--calibs_save_path", type=str, default="")
+    parser.add_argument("--calibs_batch_size", type=int, default=4)
 
     args = parser.parse_args()
 
@@ -45,7 +46,9 @@ def main():
     model, tokenizer, config = load_model(args.model, device=device)
 
     logger.info("Loading calibration and evaluation texts...")
-    calib_texts = load_calibration_texts(args.calib_size, model, tokenizer)
+    calib_texts = load_calibration_texts(
+        args.calib_size, model, tokenizer, batch_size=int(args.calibs_batch_size)
+    )
     eval_texts = load_eval_texts(args.eval_size)
 
     logger.info("Evaluating original model (for baseline perplexity)...")
@@ -56,6 +59,7 @@ def main():
         model,
         tokenizer,
         calib_texts,
+        int(args.calibs_batch_size),
         load_calibs_from=args.load_calibs_from,
         calibs_save_path=args.calibs_save_path,
     )
@@ -74,7 +78,7 @@ def main():
 
     torch.cuda.empty_cache()
     model.cuda()
-
+    model.eval()
     logger.info("Beginning compression...")
     if "mlp" not in skip:
         compress_mlp(

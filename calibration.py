@@ -10,13 +10,18 @@ from model_utils import get_model_attrs
 logger = logging.getLogger("MoDeGPT")
 
 
-def load_calibs(model, tokenizer, texts, load_calibs_from="", calibs_save_path=""):
+def load_calibs(
+    model,
+    tokenizer,
+    texts,
+    batch_size: int,
+    load_calibs_from="",
+    calibs_save_path="",
+):
     if not load_calibs_from:
         logger.info("Calibrating model...")
         cov_mlp, cov_q, cov_k, cov_x, bi_scores = __calibrate_model(
-            model,
-            tokenizer,
-            texts,
+            model, tokenizer, texts, batch_size=batch_size
         )
     else:
         covs = torch.load(load_calibs_from)
@@ -42,7 +47,12 @@ def load_calibs(model, tokenizer, texts, load_calibs_from="", calibs_save_path="
 
 
 @torch.no_grad()
-def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
+def __calibrate_model(
+    model: torch.nn.Module,
+    tokenizer,
+    texts,
+    batch_size: int,
+):
     logger.info("Calibrating model")
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
 
@@ -136,60 +146,53 @@ def __calibrate_model(model: torch.nn.Module, tokenizer, texts):
             )
 
     model.eval()
-    inputs = tokenizer(
-        "\n".join(texts), return_tensors="pt", truncation=True, padding=True, max_length=2048
-    ).to(device="cuda")
+    n_texts = 0
+    for count, batch in enumerate(texts):
+        n_texts += len(texts)
+        inputs = tokenizer(
+            batch, return_tensors="pt", truncation=True, padding=True, max_length=2048
+        ).to(device="cuda")
+        with torch.no_grad():
+            outputs = model(**inputs, output_hidden_states=True)
+            hidden_states = outputs.hidden_states
+            for l in range(n_layers):
+                x_in: Tensor = hidden_states[l].detach().to(torch.float64)  # [B, T, D]
+                x_out = hidden_states[l + 1].detach().to(torch.float64)  # [B, T, D]
 
-    with torch.no_grad():
-        outputs = model(**inputs, output_hidden_states=True)
-        hidden_states = outputs.hidden_states
-        logger.info(f"hidden_states.shape = {len(hidden_states)}")
-        for l in range(n_layers):
-            x_in: Tensor = hidden_states[l].detach().to(torch.float64)  # [B, T, D]
-            x_out = hidden_states[l + 1].detach().to(torch.float64)  # [B, T, D]
+                x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
+                x_out = x_out.view(-1, x_out.shape[-1])
 
-            x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
-            x_out = x_out.view(-1, x_out.shape[-1])
+                cov_x_list[l] += (x_in.T @ x_in).to(device="cpu")
 
-            cov_x_list[l] += (x_in.T @ x_in).to(device="cpu")
+                query_w, key_w = get_Q_K_weights(model, l)
+                for h in range(n_heads):
+                    # this is grabbing out features?? -- maybe wrong -- possibly transpose first
+                    Q_head = query_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
 
-            # up_module, act_fn = mlp_weights[l]
-            # cov_up_proj = act_fn(x_in @ up_module.weight.T.to(torch.float64))
+                    K_head = key_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
 
-            # cov_mlp_list[l] += (cov_up_proj.T @ cov_up_proj).to(device="cpu")
+                    proj_q = x_in @ Q_head.T
+                    proj_k = x_in @ K_head.T
+                    cov_q_list[l][h] += (proj_q.T @ proj_q).to(device="cpu", dtype=torch.float64)
+                    cov_k_list[l][h] += (proj_k.T @ proj_k).to(device="cpu", dtype=torch.float64)
 
-            ### THIS CODE WILL NEED TO BE UPDATED TO HANDLE BATCHES
-            query_w, key_w = get_Q_K_weights(model, l)
-            for h in range(n_heads):
-                # this is grabbing out features?? -- maybe wrong -- possibly transpose first
-                Q_head = query_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
+                cos_sim = cosine_similarity(x_in, x_out, dim=1).mean().item()
+                bi_scores[l] += 1.0 - cos_sim
 
-                K_head = key_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
-
-                proj_q = x_in @ Q_head.T
-                proj_k = x_in @ K_head.T
-                cov_q_list[l][h] += (proj_q.T @ proj_q).to(device="cpu", dtype=torch.float64)
-                cov_k_list[l][h] += (proj_k.T @ proj_k).to(device="cpu", dtype=torch.float64)
-
-            cos_sim = cosine_similarity(x_in, x_out, dim=1).mean().item()
-            bi_scores[l] += 1.0 - cos_sim
-
-            bi_counts[l] += 1
-        # logger.info(f"Text {count + 1} / {len(texts)} complete.")
+                bi_counts[l] += 1
+        logger.info(f"Completed {count + 1} of {len(texts)} batches")
+    #####
 
     for h in handles:
         h.remove()
 
-    n_tokens = len(texts) * 2048
-
-    for i in range(n_layers):
-        count = bi_counts[i]
-        if count > 0:
-            bi_scores[i] /= count
-            # cov_mlp_list[i] /= n_tokens
-            # for h in range(n_heads):
-            #     cov_q_list[i][h] /= count
-            #     cov_k_list[i][h] /= count
+    # cov_mlp_list[i] /= n_tokens
+    for layer in range(n_layers):
+        cov_mlp_list[layer] /= n_texts
+        cov_x_list[layer] /= n_texts
+        for h in range(n_heads):
+            cov_q_list[layer][h] /= n_texts
+            cov_k_list[layer][h] /= n_texts
 
     if logger:
         logger.info("Finished calibration and computed BI scores.")
@@ -252,9 +255,7 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, logger=None):
             cov_list[layer_idx][h] += (proj.T @ proj).to(device="cpu", dtype=torch.float64)
 
             # h_proj = (
-            #     proj_out[:, :, h * head_dim : (h + 1) * head_dim]
-            #     .contiguous()
-            #     .view(-1, head_dim)
+            #     proj_out[:, :, h * head_dim : (h + 1) * head_dim].contiguous().view(-1, head_dim)
             # )
             # act = h_proj.to(device="cpu")
             # cov_list[layer_idx][h] += act.T @ act
