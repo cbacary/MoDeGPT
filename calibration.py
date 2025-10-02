@@ -3,8 +3,9 @@ import logging
 import torch
 from torch.nn.functional import cosine_similarity
 from torch.types import Tensor
+from transformers.models.opt.modeling_opt import OPTDecoder, OPTDecoderLayer
 
-from compression_utils import get_Q_K_weights
+from compression_utils import get_decoder
 from model_utils import get_model_attrs
 
 logger = logging.getLogger("MoDeGPT")
@@ -152,12 +153,13 @@ def __calibrate_model(
         inputs = tokenizer(
             batch, return_tensors="pt", truncation=True, padding=True, max_length=2048
         ).to(device="cuda")
+        print(f"len(texts) = {len(texts)}")
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
             hidden_states = outputs.hidden_states
             for l in range(n_layers):
-                x_in: Tensor = hidden_states[l].detach().to(torch.float64)  # [B, T, D]
-                x_out = hidden_states[l + 1].detach().to(torch.float64)  # [B, T, D]
+                x_in: Tensor = hidden_states[l]  # [B, T, D]
+                x_out = hidden_states[l + 1]  # [B, T, D]
 
                 logger.info(f"x_in.shape = {x_in.shape}")
 
@@ -169,7 +171,21 @@ def __calibrate_model(
 
                 # also tried using q_proj(x_in) but got worse results -- possibly did something wrong
 
-                query_w, key_w = get_Q_K_weights(model, l)
+                decoder: OPTDecoder = get_decoder(model, l)
+                decoder_layer: OPTDecoderLayer = decoder.layers[l]
+
+                print(decoder_layer.do_layer_norm_before)
+                layer_hidden_states = decoder_layer.self_attn_layer_norm(x_in)
+
+                q_proj = decoder_layer.self_attn.q_proj
+                k_proj = decoder_layer.self_attn.k_proj
+
+                query_states = q_proj(layer_hidden_states)
+                key_states = k_proj(layer_hidden_states)
+
+                x_in = x_in.to(torch.float64)
+                x_out = x_out.to(torch.float64)
+                print(f"Shape x_in {x_in.shape}")
                 for batch_i in range(len(batch)):
                     batch_x_in = x_in[batch_i, :, :]
                     batch_x_out = x_out[batch_i, :, :]
@@ -181,16 +197,18 @@ def __calibrate_model(
                     cov_x_list[l] += (batch_x_in.T @ batch_x_in).to(device="cpu")
                     for h in range(n_heads):
                         # this is grabbing out features?? -- maybe wrong -- possibly transpose first
-                        Q_head = query_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
+                        Q_head = query_states[batch_i, :, :][
+                            h * head_dim : (h + 1) * head_dim, :
+                        ].to(torch.float64)
 
-                        K_head = key_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
+                        K_head = key_states[batch_i, :, :][h * head_dim : (h + 1) * head_dim, :].to(
+                            torch.float64
+                        )
 
-                        proj_q = batch_x_in @ Q_head.T
-                        proj_k = batch_x_in @ K_head.T
-                        cov_q_list[l][h] += (proj_q.T @ proj_q).to(
+                        cov_q_list[l][h] += (Q_head @ Q_head.T).to(
                             device="cpu", dtype=torch.float64
                         )
-                        cov_k_list[l][h] += (proj_k.T @ proj_k).to(
+                        cov_k_list[l][h] += (K_head @ K_head.T).to(
                             device="cpu", dtype=torch.float64
                         )
 
@@ -205,9 +223,9 @@ def __calibrate_model(
         bi_scores[layer] /= n_texts
         cov_mlp_list[layer] /= n_texts
         cov_x_list[layer] /= n_texts
-        for h in range(n_heads):
-            cov_q_list[layer][h] /= n_texts
-            cov_k_list[layer][h] /= n_texts
+        # for h in range(n_heads):
+        #     cov_q_list[layer][h] /= n_texts
+        #     cov_k_list[layer][h] /= n_texts
 
     if logger:
         logger.info("Finished calibration and computed BI scores.")

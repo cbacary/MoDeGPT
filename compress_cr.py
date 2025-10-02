@@ -80,7 +80,7 @@ def compress_qk(
                 sqrt_C_q = sqrt_M(C_q)
                 sqrt_C_k = sqrt_M(C_k)
 
-                # do we have to take transpose of Q or K?
+                # symmetric matrix, dim doesnt matter
                 norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
                 norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
                 scores = norms_q * norms_k
@@ -103,6 +103,8 @@ def compress_qk(
                     new_Q_heads.append(Q_new.T)
                     new_K_heads.append(K_new.T)
                 else:
+                    # im pretty sure this should be the same, we just take the mask of Q,K
+                    # using the topk_selector
                     Q_new = torch.zeros_like(Q_head).to(dtype=Q_head.dtype, device=Q_head.device)
                     K_new = torch.zeros_like(K_head).to(dtype=K_head.dtype, device=K_head.device)
 
@@ -112,8 +114,8 @@ def compress_qk(
                     Q_new = Q_new.to(dtype=W_q.dtype, device=W_q.device)
                     K_new = K_new.to(dtype=W_k.dtype, device=W_k.device)
 
-                    W_q[h_start:h_end, :].data.copy_(Q_new)
-                    W_k[h_start:h_end, :].data.copy_(K_new)
+                    W_q.data[h_start:h_end, :].copy_(Q_new)
+                    W_k.data[h_start:h_end, :].copy_(K_new)
 
                 """"
                 

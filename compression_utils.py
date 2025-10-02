@@ -214,6 +214,14 @@ def get_gate_projs(model, layer_idx):
             return block, up, down, "LLAMA"
 
 
+def get_decoder(model, layer_idx):
+    if hasattr(model.model, "decoder"):
+        return model.model.decoder
+    # elif for other models, dont know what they got
+    else:
+        raise AttributeError
+
+
 def get_layer_block(model, layer_idx):
     if hasattr(model.model, "decoder"):
         block = model.model.decoder.layers[layer_idx]
@@ -263,27 +271,6 @@ def allocate_global_sparsity(
     compression_ratio: float,
     smoothing: float = 1.0,
 ):
-    """
-    Allocate layer-wise retention ratio φ_i based on BI scores.
-
-    φ_i = L*φ_avg x Softmax(-s/e) -- e is epsilon which im pretty sure is the temperature
-
-    Implements softmax allocation with optional min/max constraints and normalization.
-
-    Layer 0 is skipped from compression and assigned keep_ratio = 1.0.
-
-    Args:
-        bi_scores (List[float]): Per-layer BI scores
-        model_config: HF model config
-        target_keep_ratio (float): Global average keep ratio (e.g., 0.5)
-        temperature (float): Softmax temperature
-        min_keep (float): Minimum per-layer keep ratio
-        max_keep (float): Maximum per-layer keep ratio
-
-    Returns:
-        List[float]: Per-layer keep ratios φ_i
-    """
-
     from torch.nn.functional import softmax
 
     n_layers = len(bi_scores)
