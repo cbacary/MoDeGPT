@@ -298,7 +298,7 @@ def allocate_global_sparsity(
 
     s = torch.tensor(bi_scores).to(torch.float64)
     phi = L * phi_avg * softmax(-s / epsilon, dim=0)
-    # phi[0] = 1.0
+    phi[0] = 0.0
     for count, (bi_score, sparsity) in enumerate(zip(bi_scores, phi)):
         logger.info(f"Layer {count}: sparisty = {sparsity:.4f} (BI = {bi_score:.4f})")
 

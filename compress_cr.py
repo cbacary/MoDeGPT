@@ -58,8 +58,8 @@ def compress_qk(
                 h_start = h * head_dim
                 h_end = (h + 1) * head_dim
 
-                C_q = cov_q_list[i][h].float().to("cuda")  # [Hd, Hd]
-                C_k = cov_k_list[i][h].float().to("cuda")  # [Hd, Hd]
+                C_q = cov_q_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
+                C_k = cov_k_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
 
                 if torch.isnan(C_q).any():
                     print("Big boom problem C_q nan")
@@ -86,29 +86,25 @@ def compress_qk(
                 scores = norms_q * norms_k
 
                 # NOTE TO ME LATER::: Consider dims input into topk (does it work with vector norm above)
-                topk = torch.topk(scores, k=rank_i, largest=True).indices.to(
-                    dtype=torch.uint8
+                topk = torch.topk(scores, k=rank_i, largest=True).indices
+
+                Sk = torch.eye(sqrt_C_k.shape[0], device="cuda", dtype=torch.float64)[:, topk]
+
+                topk_selector = torch.tensor([1 if j in topk else 0 for j in range(head_dim)]).to(
+                    dtype=torch.bool, device="cuda"
                 )
 
-                topk_selector = torch.tensor(
-                    [1 if j in topk else 0 for j in range(head_dim)]
-                ).to(dtype=torch.bool, device="cuda")
-
-                Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda")
-                K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda")
+                Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
+                K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
 
                 if slice_dims:
-                    Q_new = Q_head[topk_selector, :].to(device="cuda")
-                    K_new = K_head[topk_selector, :].to(device="cuda")
-                    new_Q_heads.append(Q_new)
-                    new_K_heads.append(K_new)
+                    Q_new = Sk.T @ Q_head
+                    K_new = Sk.T @ K_head
+                    new_Q_heads.append(Q_new.T)
+                    new_K_heads.append(K_new.T)
                 else:
-                    Q_new = torch.zeros_like(Q_head).to(
-                        dtype=Q_head.dtype, device=Q_head.device
-                    )
-                    K_new = torch.zeros_like(K_head).to(
-                        dtype=K_head.dtype, device=K_head.device
-                    )
+                    Q_new = torch.zeros_like(Q_head).to(dtype=Q_head.dtype, device=Q_head.device)
+                    K_new = torch.zeros_like(K_head).to(dtype=K_head.dtype, device=K_head.device)
 
                     Q_new[topk_selector, :] = Q_head[topk_selector, :]
                     K_new[topk_selector, :] = K_head[topk_selector, :]

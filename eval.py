@@ -12,11 +12,23 @@ def load_calibration_texts(calib_size, model, tokenizer, batch_size: int):
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     texts = [t for t in dataset["train"]["text"] if len(t.strip()) > 0]
 
+    # What i thought was possibly an issue:
+    # joining different portions of the calibration text into one,
+    # mangling order and thus affecting calibration
+    # apparently not the issue. worse perplexiy with the following
+    # s = np.random.choice(texts, int(calib_size), replace=False)
+    # o = []
+    # for i in range(0, len(s), batch_size):
+    #     o.append(s[i : i + batch_size].tolist())
+
+    # return o
+
     joined_texts = "\n".join(texts)
     chunked = chunk_text(
         model=model, tokenizer=tokenizer, long_texts=joined_texts, min_threshold=2048
     )
 
+    np.random.seed(1234)
     batches = []
     for i in range(0, int(calib_size), batch_size):
         batches.append(
@@ -67,6 +79,7 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
         max_length = 2048
 
     full_text = "\n".join([t.strip() for t in texts if len(t.strip()) > 0])
+    logger.info(f"Computing perplexity on text of length {len(full_text)}")
 
     inputs = tokenizer(
         full_text,
@@ -76,6 +89,7 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
     ).to(device)
 
     input_ids = inputs["input_ids"][0]
+    print(inputs["input_ids"].shape)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

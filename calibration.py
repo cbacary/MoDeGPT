@@ -159,27 +159,39 @@ def __calibrate_model(
                 x_in: Tensor = hidden_states[l].detach().to(torch.float64)  # [B, T, D]
                 x_out = hidden_states[l + 1].detach().to(torch.float64)  # [B, T, D]
 
-                x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
-                x_out = x_out.view(-1, x_out.shape[-1])
+                logger.info(f"x_in.shape = {x_in.shape}")
 
-                cov_x_list[l] += (x_in.T @ x_in).to(device="cpu")
+                # x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
+                # logger.info(f"x_in.shape ( transformed )= {x_in.shape}")
+                # x_out = x_out.view(-1, x_out.shape[-1])
+
+                # cov_x_list[l] += (x_in.T @ x_in).to(device="cpu")
 
                 query_w, key_w = get_Q_K_weights(model, l)
-                for h in range(n_heads):
-                    # this is grabbing out features?? -- maybe wrong -- possibly transpose first
-                    Q_head = query_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
+                for batch_i in range(len(batch)):
+                    batch_x_in = x_in[batch_i, :, :]
+                    batch_x_out = x_out[batch_i, :, :]
 
-                    K_head = key_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
+                    cos_sim = cosine_similarity(batch_x_in, batch_x_out, dim=1).mean().item()
+                    bi_scores[l] += 1.0 - cos_sim
+                    bi_counts[l] += 1
 
-                    proj_q = x_in @ Q_head.T
-                    proj_k = x_in @ K_head.T
-                    cov_q_list[l][h] += (proj_q.T @ proj_q).to(device="cpu", dtype=torch.float64)
-                    cov_k_list[l][h] += (proj_k.T @ proj_k).to(device="cpu", dtype=torch.float64)
+                    cov_x_list[l] += (batch_x_in.T @ batch_x_in).to(device="cpu")
+                    for h in range(n_heads):
+                        # this is grabbing out features?? -- maybe wrong -- possibly transpose first
+                        Q_head = query_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
 
-                cos_sim = cosine_similarity(x_in, x_out, dim=1).mean().item()
-                bi_scores[l] += 1.0 - cos_sim
+                        K_head = key_w[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
 
-                bi_counts[l] += 1
+                        proj_q = batch_x_in @ Q_head.T
+                        proj_k = batch_x_in @ K_head.T
+                        cov_q_list[l][h] += (proj_q.T @ proj_q).to(
+                            device="cpu", dtype=torch.float64
+                        )
+                        cov_k_list[l][h] += (proj_k.T @ proj_k).to(
+                            device="cpu", dtype=torch.float64
+                        )
+
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
     #####
 
@@ -188,6 +200,7 @@ def __calibrate_model(
 
     # cov_mlp_list[i] /= n_tokens
     for layer in range(n_layers):
+        bi_scores[layer] /= n_texts
         cov_mlp_list[layer] /= n_texts
         cov_x_list[layer] /= n_texts
         for h in range(n_heads):
