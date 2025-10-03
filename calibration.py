@@ -1,14 +1,18 @@
+import numpy as np
+import random
 import logging
 
 import torch
-from torch.nn.functional import cosine_similarity
+from torch.nn.functional import normalize
 from torch.types import Tensor
-from transformers.models.opt.modeling_opt import OPTDecoder, OPTDecoderLayer
 
-from compression_utils import get_decoder
+
 from model_utils import get_model_attrs
 
 logger = logging.getLogger("MoDeGPT")
+
+np.random.seed(1234)
+random.seed(1234)
 
 
 def load_calibs(
@@ -121,16 +125,16 @@ def __calibrate_model(
         elif arch == "opt":
             # mlp_weights.append((block.fc1, block.activation_fn))
             handles.append(block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger)))
-            # handles.append(
-            #     block.self_attn.q_proj.register_forward_hook(
-            #         _make_proj_hook(i, cov_q_list, n_heads, head_dim, logger)
-            #     )
-            # )
-            # handles.append(
-            #     block.self_attn.k_proj.register_forward_hook(
-            #         _make_proj_hook(i, cov_k_list, n_heads, head_dim, logger)
-            #     )
-            # )
+            handles.append(
+                block.self_attn.q_proj.register_forward_hook(
+                    _make_proj_hook(i, cov_q_list, n_heads, head_dim, logger)
+                )
+            )
+            handles.append(
+                block.self_attn.k_proj.register_forward_hook(
+                    _make_proj_hook(i, cov_k_list, n_heads, head_dim, logger)
+                )
+            )
         elif arch == "llama":
             handles.append(
                 block.mlp.gate_proj.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
@@ -151,7 +155,7 @@ def __calibrate_model(
     for count, batch in enumerate(texts):
         n_texts += len(texts)
         inputs = tokenizer(
-            batch, return_tensors="pt", truncation=True, padding=True, max_length=2048
+            batch, return_tensors="pt", padding=True, truncation=True, max_length=2048
         ).to(device="cuda")
         print(f"len(texts) = {len(texts)}")
         with torch.no_grad():
@@ -171,46 +175,42 @@ def __calibrate_model(
 
                 # also tried using q_proj(x_in) but got worse results -- possibly did something wrong
 
-                decoder: OPTDecoder = get_decoder(model, l)
-                decoder_layer: OPTDecoderLayer = decoder.layers[l]
+                # decoder: OPTDecoder = get_decoder(model, l)
+                # decoder_layer: OPTDecoderLayer = decoder.layers[l]
 
-                print(decoder_layer.do_layer_norm_before)
-                layer_hidden_states = decoder_layer.self_attn_layer_norm(x_in)
+                # print(decoder_layer.do_layer_norm_before)
+                # layer_hidden_states = decoder_layer.self_attn_layer_norm(x_in)
 
-                q_proj = decoder_layer.self_attn.q_proj
-                k_proj = decoder_layer.self_attn.k_proj
+                # q_proj = decoder_layer.self_attn.q_proj
+                # k_proj = decoder_layer.self_attn.k_proj
 
-                query_states = q_proj(layer_hidden_states)
-                key_states = k_proj(layer_hidden_states)
+                # query_states = q_proj(layer_hidden_states)
+                # key_states = k_proj(layer_hidden_states)
 
                 x_in = x_in.to(torch.float64)
                 x_out = x_out.to(torch.float64)
-                print(f"Shape x_in {x_in.shape}")
+                bi_scores[l] = get_BI_score(x_in, x_out)
                 for batch_i in range(len(batch)):
                     batch_x_in = x_in[batch_i, :, :]
-                    batch_x_out = x_out[batch_i, :, :]
-
-                    cos_sim = cosine_similarity(batch_x_in, batch_x_out, dim=1).mean().item()
-                    bi_scores[l] += 1.0 - cos_sim
-                    bi_counts[l] += 1
+                    #     Q_batch = query_states[batch_i, :, :]
+                    #     K_batch = key_states[batch_i, :, :]
 
                     cov_x_list[l] += (batch_x_in.T @ batch_x_in).to(device="cpu")
-                    for h in range(n_heads):
-                        # this is grabbing out features?? -- maybe wrong -- possibly transpose first
-                        Q_head = query_states[batch_i, :, :][
-                            h * head_dim : (h + 1) * head_dim, :
-                        ].to(torch.float64)
+                #     for h in range(n_heads):
+                #         # this is grabbing out features?? -- maybe wrong -- possibly transpose first
+                #         Q_head = Q_batch[:, h * head_dim : (h + 1) * head_dim].to(torch.float64)
 
-                        K_head = key_states[batch_i, :, :][h * head_dim : (h + 1) * head_dim, :].to(
-                            torch.float64
-                        )
+                #         K_head = K_batch[
+                #             :,
+                #             h * head_dim : (h + 1) * head_dim,
+                #         ].to(torch.float64)
 
-                        cov_q_list[l][h] += (Q_head @ Q_head.T).to(
-                            device="cpu", dtype=torch.float64
-                        )
-                        cov_k_list[l][h] += (K_head @ K_head.T).to(
-                            device="cpu", dtype=torch.float64
-                        )
+                #         cov_q_list[l][h] += (Q_head.T @ Q_head).to(
+                #             device="cpu", dtype=torch.float64
+                #         )
+                #         cov_k_list[l][h] += (K_head.T @ K_head).to(
+                #             device="cpu", dtype=torch.float64
+                #         )
 
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
     #####
@@ -220,7 +220,6 @@ def __calibrate_model(
 
     # cov_mlp_list[i] /= n_tokens
     for layer in range(n_layers):
-        bi_scores[layer] /= n_texts
         cov_mlp_list[layer] /= n_texts
         cov_x_list[layer] /= n_texts
         # for h in range(n_heads):
@@ -230,6 +229,30 @@ def __calibrate_model(
     if logger:
         logger.info("Finished calibration and computed BI scores.")
     return cov_mlp_list, cov_q_list, cov_k_list, cov_x_list, bi_scores
+
+
+def get_BI_score(x_in, x_out):
+    Corr = []
+    norm_diff = []
+    x_in = x_in.double().to(device="cuda", dtype=torch.float64)
+    x_out = x_out.double().to(device="cuda", dtype=torch.float64)
+
+    normalizer = torch.norm(x_in, p=2, dim=2)
+
+    diff = torch.norm((x_in - x_out), p=2, dim=2)
+    diff = (diff / normalizer).mean()
+    norm_diff.append(diff)
+
+    x_in = normalize(x_in, p=2, dim=2)
+    x_out = normalize(x_out, p=2, dim=2)
+
+    corr = torch.diag((x_in @ x_out.mT)[0]).mean()
+    Corr.append(corr)
+
+    Corr = torch.tensor([x for x in Corr]).mean()
+    norm_diff = torch.tensor([x for x in norm_diff]).mean()
+
+    return (1 - Corr).item() * norm_diff.item()
 
 
 @torch.no_grad()
@@ -281,21 +304,21 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, logger=None):
 
     def hook(module: torch.nn.Linear, inp, out):
         # try:
-        # proj_out = out.detach().to(dtype=torch.float64, device="cpu")
+        proj_out = out.detach().to(dtype=torch.float64, device="cpu")
         for h in range(n_heads):
-            weight_head = module.weight[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
+            # weight_head = module.weight[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
 
-            d_inp = inp[0].view(-1, weight_head.shape[1]).to(torch.float64)
+            # d_inp = inp[0].view(-1, weight_head.shape[1]).to(torch.float64)
 
-            proj = d_inp @ weight_head.T
-            # act = torch.nn.functional.gelu(proj).to(device="cpu", dtype=torch.float64)
-            cov_list[layer_idx][h] += (proj.T @ proj).to(device="cpu", dtype=torch.float64)
+            # proj = d_inp @ weight_head.T
+            # # act = torch.nn.functional.gelu(proj).to(device="cpu", dtype=torch.float64)
+            # cov_list[layer_idx][h] += (proj.T @ proj).to(device="cpu", dtype=torch.float64)
 
-            # h_proj = (
-            #     proj_out[:, :, h * head_dim : (h + 1) * head_dim].contiguous().view(-1, head_dim)
-            # )
-            # act = h_proj.to(device="cpu")
-            # cov_list[layer_idx][h] += act.T @ act
+            h_proj = (
+                proj_out[:, :, h * head_dim : (h + 1) * head_dim].contiguous().view(-1, head_dim)
+            )
+            act = h_proj.to(device="cpu")
+            cov_list[layer_idx][h] += act.T @ act
 
     # except Exception as e:
     #     if logger:

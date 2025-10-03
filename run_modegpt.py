@@ -68,6 +68,8 @@ def main():
         bi_scores, compression_ratio=args.compression_ratio
     )
 
+    model, tokenizer, config = load_model(args.model, device=device)
+
     slice_dims = True
     ridge_lambda = 1e-2
 
@@ -102,7 +104,7 @@ def main():
             cov=(cov_q, cov_k),
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=False,
+            slice_dims=True,
         )
 
         save_model(
@@ -118,7 +120,7 @@ def main():
             cov=cov_x,
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=False,
+            slice_dims=True,
         )
 
         save_model(
@@ -128,12 +130,23 @@ def main():
             source_model_name=args.model,
         )
 
-    # if "vo" not in skip:
-    #     from compression_utils import patch_forward_OPT
+    save_model(
+        model,
+        tokenizer,
+        save_dir=f"{args.output_dir}",
+        source_model_name=args.model,
+    )
+    # del model
+    # torch.cuda.empty_cache()
+    # model, tokenizer, config = load_model(args.output_dir)
 
-    #     patch_forward_OPT(
-    #         model,
-    #     )
+    # if "vo" not in skip:
+    from compression_utils import patch_forward_OPT
+
+    patch_forward_OPT(
+        model,
+    )
+
     model.cuda()
     compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
     logger.info(f"Compressed model perplexity on WikiText2: {compressed_ppl:.2f}")

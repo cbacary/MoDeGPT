@@ -31,93 +31,112 @@ def compress_qk(
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
 
     for i in range(n_layers):
+        # try:
+        keep_ratio = keep_ratios[i]
+        rank_i = int(head_dim * keep_ratio) if rank is None else rank
+        rank_i = max(1, min(rank_i, head_dim))
+
+        # === Get Q, K weight reference ===
         try:
-            keep_ratio = keep_ratios[i]
-            rank_i = int(head_dim * keep_ratio) if rank is None else rank
-            rank_i = max(1, min(rank_i, head_dim))
-
-            # === Get Q, K weight reference ===
+            block = model.model.decoder.layers[i]  # OPT
+            W_q = block.self_attn.q_proj.weight
+            W_k = block.self_attn.k_proj.weight
+            bias_q = block.self_attn.q_proj.bias
+            bias_k = block.self_attn.k_proj.bias
+        except AttributeError:
             try:
-                block = model.model.decoder.layers[i]  # OPT
-                W_q = block.self_attn.q_proj.weight
-                W_k = block.self_attn.k_proj.weight
+                block = model.transformer.h[i]  # GPT (unsupported)
+                raise NotImplementedError("GPT packed QKV not supported in Type-II compression.")
             except AttributeError:
-                try:
-                    block = model.transformer.h[i]  # GPT (unsupported)
-                    raise NotImplementedError(
-                        "GPT packed QKV not supported in Type-II compression."
-                    )
-                except AttributeError:
-                    block = model.model.layers[i]  # LLaMA
-                    W_q = block.self_attn.q_proj.weight
-                    W_k = block.self_attn.k_proj.weight
+                block = model.model.layers[i]  # LLaMA
+                W_q = block.self_attn.q_proj.weight
+                bias_q = block.self_attn.q_proj.bias
+                W_k = block.self_attn.k_proj.weight
+                bias_k = block.self_attn.k_proj.bias
 
-            new_Q_heads = []
-            new_K_heads = []
-            for h in range(n_heads):
-                h_start = h * head_dim
-                h_end = (h + 1) * head_dim
+        print(f"bias_q.shape = {bias_q.shape}")
+        print(f"bias_k.shape = {bias_k.shape}")
 
-                C_q = cov_q_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
-                C_k = cov_k_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
+        new_Q_heads = []
+        new_K_heads = []
+        bias_Q_heads = []
+        bias_K_heads = []
+        for h in range(n_heads):
+            h_start = h * head_dim
+            h_end = (h + 1) * head_dim
 
-                if torch.isnan(C_q).any():
-                    print("Big boom problem C_q nan")
-                if torch.isinf(C_q).any():
-                    print("Big boom problem C_q inf")
-                if torch.isnan(C_k).any():
-                    print("Big boom problem C_k nan")
-                if torch.isinf(C_k).any():
-                    print("Big boom problem C_k inf")
+            C_q = cov_q_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
+            C_k = cov_k_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
 
-                # C_q = C_q + (ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device))
-                # C_k = C_k + (ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device))
+            if torch.isnan(C_q).any():
+                print("Big boom problem C_q nan")
+            if torch.isinf(C_q).any():
+                print("Big boom problem C_q inf")
+            if torch.isnan(C_k).any():
+                print("Big boom problem C_k nan")
+            if torch.isinf(C_k).any():
+                print("Big boom problem C_k inf")
 
-                # === Use MoDeGPT CR scores: ||C_q^{1/2}[:,i]|| * ||C_k^{1/2}[:,i]||
-                # ridge_eye = ridge_lambda * torch.eye(head_dim, device="cuda")
-                # sqrt_C_q = torch.linalg.cholesky(C_q + ridge_eye)  # [Hd, Hd]
-                # sqrt_C_k = torch.linalg.cholesky(C_k + ridge_eye)
-                sqrt_C_q = sqrt_M(C_q)
-                sqrt_C_k = sqrt_M(C_k)
+            # C_q = C_q + (ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device))
+            # C_k = C_k + (ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device))
 
-                # symmetric matrix, dim doesnt matter
-                norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
-                norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
-                scores = norms_q * norms_k
+            # === Use MoDeGPT CR scores: ||C_q^{1/2}[:,i]|| * ||C_k^{1/2}[:,i]||
+            # ridge_eye = ridge_lambda * torch.eye(head_dim, device="cuda")
+            # sqrt_C_q = torch.linalg.cholesky(C_q + ridge_eye)  # [Hd, Hd]
+            # sqrt_C_k = torch.linalg.cholesky(C_k + ridge_eye)
+            sqrt_C_q = sqrt_M(C_q)
+            sqrt_C_k = sqrt_M(C_k)
 
-                # NOTE TO ME LATER::: Consider dims input into topk (does it work with vector norm above)
-                topk = torch.topk(scores, k=rank_i, largest=True).indices
+            # symmetric matrix, dim doesnt matter
+            norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
+            norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
+            scores = norms_q * norms_k
 
-                Sk = torch.eye(sqrt_C_k.shape[0], device="cuda", dtype=torch.float64)[:, topk]
+            # NOTE TO ME LATER::: Consider dims input into topk (does it work with vector norm above)
+            topk = torch.topk(scores, k=rank_i, largest=True).indices
 
-                topk_selector = torch.tensor([1 if j in topk else 0 for j in range(head_dim)]).to(
-                    dtype=torch.bool, device="cuda"
-                )
+            Sk = torch.eye(sqrt_C_k.shape[0], device="cuda", dtype=torch.float64)[:, topk]
 
-                Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
-                K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
+            topk_selector = torch.tensor([1 if j in topk else 0 for j in range(head_dim)]).to(
+                dtype=torch.bool, device="cuda"
+            )
 
-                if slice_dims:
-                    Q_new = Sk.T @ Q_head  # dont trust this, gotta rethink about that
-                    K_new = Sk.T @ K_head
-                    new_Q_heads.append(Q_new.T)
-                    new_K_heads.append(K_new.T)
-                else:
-                    # im pretty sure this should be the same, we just take the mask of Q,K
-                    # using the topk_selector
-                    Q_new = torch.zeros_like(Q_head).to(dtype=Q_head.dtype, device=Q_head.device)
-                    K_new = torch.zeros_like(K_head).to(dtype=K_head.dtype, device=K_head.device)
+            Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
+            K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
 
-                    Q_new[topk_selector, :] = Q_head[topk_selector, :]
-                    K_new[topk_selector, :] = K_head[topk_selector, :]
+            if slice_dims:
+                # bias_q_new = torch.zeros(rank_i).to(dtype=bias_q.dtype, device=bias_q.device)
+                # bias_k_new = torch.zeros(rank_i).to(dtype=bias_k.dtype, device=bias_k.device)
+                Q_new = Q_head.T @ Sk  # dont trust this, gotta rethink about that
+                K_new = K_head.T @ Sk
+                bias_q_new = bias_q[h_start:h_end][topk_selector]
+                bias_k_new = bias_k[h_start:h_end][topk_selector]
+                new_Q_heads.append(Q_new.T)
+                new_K_heads.append(K_new.T)
+                bias_Q_heads.append(bias_q_new)
+                bias_K_heads.append(bias_k_new)
+            else:
+                # im pretty sure this should be the same, we just take the mask of Q,K
+                # using the topk_selector
+                Q_new = torch.zeros_like(Q_head).to(dtype=Q_head.dtype, device=Q_head.device)
+                K_new = torch.zeros_like(K_head).to(dtype=K_head.dtype, device=K_head.device)
+                bias_q_new = torch.zeros(head_dim).to(dtype=bias_q.dtype, device=bias_q.device)
+                bias_k_new = torch.zeros(head_dim).to(dtype=bias_k.dtype, device=bias_k.device)
 
-                    Q_new = Q_new.to(dtype=W_q.dtype, device=W_q.device)
-                    K_new = K_new.to(dtype=W_k.dtype, device=W_k.device)
+                Q_new[topk_selector, :] = Q_head[topk_selector, :]
+                K_new[topk_selector, :] = K_head[topk_selector, :]
+                bias_q_new[topk_selector] = bias_q[h_start:h_end][topk_selector]
+                bias_k_new[topk_selector] = bias_k[h_start:h_end][topk_selector]
 
-                    W_q.data[h_start:h_end, :].copy_(Q_new)
-                    W_k.data[h_start:h_end, :].copy_(K_new)
+                Q_new = Q_new.to(dtype=W_q.dtype, device=W_q.device)
+                K_new = K_new.to(dtype=W_k.dtype, device=W_k.device)
 
-                """"
+                bias_q.data[h_start:h_end].copy_(bias_q_new)
+                bias_k.data[h_start:h_end].copy_(bias_k_new)
+                W_q.data[h_start:h_end, :].copy_(Q_new)
+                W_k.data[h_start:h_end, :].copy_(K_new)
+
+            """"
                 
                 The original code from the MoDeGPT github i was originally given
 
@@ -153,20 +172,22 @@ def compress_qk(
                 
                 """
 
-            if slice_dims:
-                slice_QK_dims(
-                    model=model,
-                    layer_idx=i,
-                    new_heads_Q=new_Q_heads,
-                    new_heads_K=new_K_heads,
-                    bias=False,
-                )
+        if slice_dims:
+            slice_QK_dims(
+                model=model,
+                layer_idx=i,
+                new_heads_Q=new_Q_heads,
+                new_heads_K=new_K_heads,
+                new_bias_Q=bias_Q_heads,
+                new_bias_K=bias_K_heads,
+                bias=True,
+            )
 
-            if logger:
-                logger.info(
-                    f"[QK] ✅ Layer {i}: compressed to rank {rank_i} per head (CR-score + interpolation)"
-                )
-        except Exception as e:
-            if logger:
-                logger.error("Error: %s", e, exc_info=True)
-                logger.warning(f"[QK] Compression failed at layer {i}: {e}")
+        if logger:
+            logger.info(
+                f"[QK] ✅ Layer {i}: compressed to rank {rank_i} per head (CR-score + interpolation)"
+            )
+    # except Exception as e:
+    #     if logger:
+    #         logger.error("Error: %s", e, exc_info=True)
+    #         logger.warning(f"[QK] Compression failed at layer {i}: {e}")

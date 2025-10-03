@@ -72,6 +72,7 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
         # = [D_h, D_int] @ [D_int, rank_i]
         # = [D_h, rank_i]
         W_u_proj = W_u.T @ Sk  # [r, D_h]
+        new_bias = 
 
         # Sk.T @ (C @ Sk) =
         # = [rank_i, D_int] @ ( [D_int, D_int] @ [D_int, rank_i] )
