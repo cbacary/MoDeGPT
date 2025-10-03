@@ -145,7 +145,7 @@ def slice_VO_dims(
     self_attn.embed_dim = self_attn.v_proj.out_features
 
 
-def slice_gate_dims(model, layer_idx: int, up_weights: Tensor, down_weights: Tensor, bias: bool):
+def slice_gate_dims(model, layer_idx: int, up_weights: Tensor, down_weights: Tensor, new_bias_u: Tensor, bias: bool):
     block, up, down, arch = get_gate_projs(model, layer_idx=layer_idx)
 
     new_layer_U = torch.nn.Linear(
@@ -157,9 +157,8 @@ def slice_gate_dims(model, layer_idx: int, up_weights: Tensor, down_weights: Ten
         bias=False,
     )
     new_layer_U.weight.data.copy_(up_weights.to(torch.float16))
-    # output_features of o_proj is altered so bias is unusable
-    # if up.bias is not None and bias:
-    #     new_layer_U.bias.data.copy_(up.bias.data)
+    if bias and new_bias_u is not None:
+        new_layer_U.bias.data.copy_(new_bias_u)
 
     new_layer_D = torch.nn.Linear(
         in_features=down_weights.shape[1],

@@ -22,6 +22,12 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
             block = model.model.decoder.layers[i]  # OPT
             W_u = block.fc1.weight  # [D_int, D_h]
             W_d = block.fc2.weight  # [D_h, D_int]
+            bias_u = block.fc1.bias
+            bias_d = block.fc1.bias
+            proj_u = block.fc1
+            proj_d = block.fc2
+        except AttributeError:
+            block = model.transformer.h[i]  # GPT
             proj_u = block.fc1
             proj_d = block.fc2
         except AttributeError:
@@ -72,7 +78,7 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
         # = [D_h, D_int] @ [D_int, rank_i]
         # = [D_h, rank_i]
         W_u_proj = W_u.T @ Sk  # [r, D_h]
-        new_bias = 
+        new_bias_u = bias_u[topk_selector]
 
         # Sk.T @ (C @ Sk) =
         # = [rank_i, D_int] @ ( [D_int, D_int] @ [D_int, rank_i] )
@@ -106,6 +112,7 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
                 layer_idx=i,
                 up_weights=W_u_proj.T,
                 down_weights=W_d_proj.T,
+                new_bias_u=new_bias_u,
                 bias=True,
             )
         else:
