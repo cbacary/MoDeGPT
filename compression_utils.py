@@ -145,7 +145,9 @@ def slice_VO_dims(
     self_attn.embed_dim = self_attn.v_proj.out_features
 
 
-def slice_gate_dims(model, layer_idx: int, up_weights: Tensor, down_weights: Tensor, new_bias_u: Tensor, bias: bool):
+def slice_gate_dims(
+    model, layer_idx: int, up_weights: Tensor, down_weights: Tensor, new_bias_u: Tensor, bias: bool
+):
     block, up, down, arch = get_gate_projs(model, layer_idx=layer_idx)
 
     new_layer_U = torch.nn.Linear(
@@ -153,11 +155,12 @@ def slice_gate_dims(model, layer_idx: int, up_weights: Tensor, down_weights: Ten
         out_features=up_weights.shape[0],
         device="cuda",
         dtype=torch.float16,
-        # bias=True if up.bias is not None else False and bias,
-        bias=False,
+        bias=True if up.bias is not None and bias else False,
+        # bias=False,
     )
     new_layer_U.weight.data.copy_(up_weights.to(torch.float16))
     if bias and new_bias_u is not None:
+        logger.info("Copying up layer bias")
         new_layer_U.bias.data.copy_(new_bias_u)
 
     new_layer_D = torch.nn.Linear(
@@ -170,6 +173,7 @@ def slice_gate_dims(model, layer_idx: int, up_weights: Tensor, down_weights: Ten
     )
     new_layer_D.weight.data.copy_(down_weights.to(torch.float16))
     if down.bias is not None and bias:
+        logger.info("Copying down layer bias")
         new_layer_D.bias.data.copy_(down.bias.data)
 
     if arch == "OPT":

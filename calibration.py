@@ -220,7 +220,7 @@ def __calibrate_model(
 
     # cov_mlp_list[i] /= n_tokens
     for layer in range(n_layers):
-        cov_mlp_list[layer] /= n_texts
+        # cov_mlp_list[layer] /= n_texts
         cov_x_list[layer] /= n_texts
         # for h in range(n_heads):
         #     cov_q_list[layer][h] /= n_texts
@@ -258,9 +258,15 @@ def get_BI_score(x_in, x_out):
 @torch.no_grad()
 def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
     def hook(module: torch.nn.Linear, inp, out):
-        act = torch.nn.functional.relu(
-            out.to(dtype=torch.float64)
-        )  # originally using GELU (incorrect for OPT)
+        # out [B*T, D_int]
+        print(f"out.shape = {out.shape}")
+        act = torch.nn.functional.relu(out.to(dtype=torch.float64))
+
+        # for batch_i in range(act.shape[0]):
+        #     act_batch = act[batch_i, :, :]
+        #     cov_mlp_list[layer_idx] += (act_batch.T @ act_batch).to(device="cpu")
+
+        # originally using GELU (incorrect for OPT)
         # reallly we should grab the activation function directly
         # from the model its something like model.decoder....act_fn()
         H = act.detach().to(dtype=torch.float64).view(-1, act.size(-1))

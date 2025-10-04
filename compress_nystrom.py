@@ -10,7 +10,7 @@ logger = logging.getLogger("MoDeGPT")
 
 
 @torch.no_grad()
-def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
+def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
     """
     MoDeGPT Type-I Compression (MLP): Full Nyström approximation with ridge leverage scoring.
     """
@@ -45,15 +45,15 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
                 W_d = proj_d.weight
 
         keep_ratio = keep_ratios[i]
-        C = cov[i].to(dtype=torch.float32, device="cuda")  # [D_int, D_int]
+        C = cov[i].to(dtype=torch.float64, device="cuda")  # [D_int, D_int]
         D_int = C.shape[0]
         rank_i = int(D_int * keep_ratio)
         rank_i = max(1, min(rank_i, D_int))
 
         C_ridge = C + (ridge_lambda * torch.eye(D_int, device=C.device))
         inv_term = torch.linalg.inv(C_ridge)
-        # s_i = torch.linalg.solve(C_ridge.T, C.T).T
-        s_i = C @ inv_term
+        s_i = torch.linalg.solve(C_ridge.T, C.T).T
+        # s_i = inv_term @ C
         scores = torch.diag(s_i)
 
         topk = torch.topk(scores, k=rank_i, largest=True, dim=0).indices
@@ -64,10 +64,14 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
         print(f"Shape of s_i {s_i.shape}")
         print(f"Shape of scores {scores.shape}")
         print(f"Shape of topk {topk.shape}")
-        Sk = torch.eye(D_int, device=C.device, dtype=C.dtype)[:, topk]  # [D_int, rank_i]
+        # THIS IS WRONG. THis is only taking the first rank_i cols which makes it take actually
+        # the WRONG colums from this thing. (Same thing could be wrong with CR)
+        Sk = torch.eye(D_int, device=C.device, dtype=torch.float64)[
+            :, topk_selector
+        ]  # [D_int, rank_i]
 
-        W_u = W_u.to(torch.float32).clone().to("cuda")  # [D_int, D_h]
-        W_d = W_d.to(torch.float32).clone().to("cuda")  # [D_h, D_int]
+        W_u = W_u.to(torch.float64).clone().to("cuda")  # [D_int, D_h]
+        W_d = W_d.to(torch.float64).clone().to("cuda")  # [D_h, D_int]
 
         # W_u.data.zero_()
         # W_d.data.zero_()
@@ -118,10 +122,10 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-2, slice_dims=True):
         else:
             ### ignore this part
             proj_u.weight.data.zero_()
-            proj_u.weight.data[topk_selector, :] = W_u_proj.T.to(proj_u.weight)
+            proj_u.weight.data[:rank_i, :] = W_u_proj.to(proj_u.weight)
 
             proj_d.weight.data.zero_()
-            proj_d.weight.data[:, topk_selector] = W_d_proj.T.to(proj_d.weight)
+            proj_d.weight.data[:, :rank_i] = W_d_proj.to(proj_d.weight)
             # W_u.data.zero_()
             # W_u.data[:r, :] = W_u_proj.to(W_u.dtype).to(W_u.device)
 
