@@ -8,7 +8,8 @@ git clone https://github.com/cbacary/MoDeGPT.git
 cd MoDeGPT
 ```
 2. Install Package 
-**uv** or whatever env manager you use
+
+using `uv`:
 ```Shell
 
 uv venv --python 3.11
