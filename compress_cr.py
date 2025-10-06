@@ -12,6 +12,7 @@ from model_utils import get_model_attrs
 logger = logging.getLogger("MoDeGPT")
 
 
+#### NOTE: see OPTDecoderLayer.final_layer_norm
 @torch.no_grad()
 def compress_qk(
     model,
@@ -36,7 +37,6 @@ def compress_qk(
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
         rank_i = max(1, min(rank_i, head_dim))
 
-        # === Get Q, K weight reference ===
         try:
             block = model.model.decoder.layers[i]  # OPT
             W_q = block.self_attn.q_proj.weight
@@ -54,9 +54,6 @@ def compress_qk(
                 W_k = block.self_attn.k_proj.weight
                 bias_k = block.self_attn.k_proj.bias
 
-        print(f"bias_q.shape = {bias_q.shape}")
-        print(f"bias_k.shape = {bias_k.shape}")
-
         new_Q_heads = []
         new_K_heads = []
         bias_Q_heads = []
@@ -68,22 +65,6 @@ def compress_qk(
             C_q = cov_q_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
             C_k = cov_k_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
 
-            if torch.isnan(C_q).any():
-                print("Big boom problem C_q nan")
-            if torch.isinf(C_q).any():
-                print("Big boom problem C_q inf")
-            if torch.isnan(C_k).any():
-                print("Big boom problem C_k nan")
-            if torch.isinf(C_k).any():
-                print("Big boom problem C_k inf")
-
-            # C_q = C_q + (ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device))
-            # C_k = C_k + (ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device))
-
-            # === Use MoDeGPT CR scores: ||C_q^{1/2}[:,i]|| * ||C_k^{1/2}[:,i]||
-            # ridge_eye = ridge_lambda * torch.eye(head_dim, device="cuda")
-            # sqrt_C_q = torch.linalg.cholesky(C_q + ridge_eye)  # [Hd, Hd]
-            # sqrt_C_k = torch.linalg.cholesky(C_k + ridge_eye)
             sqrt_C_q = sqrt_M(C_q)
             sqrt_C_k = sqrt_M(C_k)
 

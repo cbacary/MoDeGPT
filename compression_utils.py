@@ -86,8 +86,6 @@ def slice_QK_dims(
     self_attn.k_proj = new_layer_K
     self_attn.q_proj = new_layer_Q
 
-    self_attn.embed_dim = self_attn.k_proj.out_features
-
 
 @torch.no_grad
 def slice_VO_dims(
@@ -120,20 +118,20 @@ def slice_VO_dims(
     )
     new_layer_V.weight.data.copy_(V_heads)
     # output_features of o_proj is altered so bias is unusable
-    if original_v.bias is not None and bias:
-        new_layer_V.bias.data.copy_(original_v.bias.data)
+    # if original_v.bias is not None and bias:
+    #     new_layer_V.bias.data.copy_(original_v.bias.data)
 
     new_layer_O = torch.nn.Linear(
         in_features=O_heads.shape[1],
         out_features=O_heads.shape[0],
         device="cuda",
         dtype=torch.float16,
-        bias=False,
-        # bias=True if original_o.bias is not None else False,
+        # bias=False,
+        bias=True if original_o.bias is not None and bias else False,
     )
     new_layer_O.weight.data.copy_(O_heads)
-    # if original_o.bias is not None and bias:
-    #     new_layer_O.bias.data.copy_(original_o.bias.data)
+    if original_o.bias is not None and bias:
+        new_layer_O.bias.data.copy_(original_o.bias.data)
 
     if hasattr(self_attn, "out_proj"):
         self_attn.out_proj = new_layer_O
@@ -142,7 +140,7 @@ def slice_VO_dims(
 
     self_attn.v_proj = new_layer_V
 
-    self_attn.embed_dim = self_attn.v_proj.out_features
+    # self_attn.embed_dim = self_attn.v_proj.out_features
 
 
 def slice_gate_dims(
@@ -187,7 +185,11 @@ def slice_gate_dims(
         block.mlp.down_proj = new_layer_D
 
 
-def patch_forward_OPT(model):
+def patch_OPT(model):
+    """
+    hidden_size needs to become input_features of Q or K weights
+
+    """
     config = model.config
     n_layers = (
         getattr(config, "n_layer", None)
@@ -276,7 +278,7 @@ def get_V_O_weights(model, layer_idx):
 def allocate_global_sparsity(
     bi_scores: list[float],
     compression_ratio: float,
-    smoothing: float = 1.0,
+    smoothing: float = 0.25,
 ):
     from torch.nn.functional import softmax
 

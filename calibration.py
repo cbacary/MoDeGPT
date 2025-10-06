@@ -127,12 +127,12 @@ def __calibrate_model(
             handles.append(block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger)))
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
-                    _make_proj_hook(i, cov_q_list, n_heads, head_dim, logger)
+                    _make_proj_hook(i, cov_q_list, n_heads, head_dim, d_model, logger)
                 )
             )
             handles.append(
                 block.self_attn.k_proj.register_forward_hook(
-                    _make_proj_hook(i, cov_k_list, n_heads, head_dim, logger)
+                    _make_proj_hook(i, cov_k_list, n_heads, head_dim, d_model, logger)
                 )
             )
         elif arch == "llama":
@@ -164,8 +164,6 @@ def __calibrate_model(
             for l in range(n_layers):
                 x_in: Tensor = hidden_states[l]  # [B, T, D]
                 x_out = hidden_states[l + 1]  # [B, T, D]
-
-                logger.info(f"x_in.shape = {x_in.shape}")
 
                 # x_in = x_in.view(-1, x_in.shape[-1])  # [B*T, D]
                 # logger.info(f"x_in.shape ( transformed )= {x_in.shape}")
@@ -259,7 +257,6 @@ def get_BI_score(x_in, x_out):
 def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
     def hook(module: torch.nn.Linear, inp, out):
         # out [B*T, D_int]
-        print(f"out.shape = {out.shape}")
         act = torch.nn.functional.relu(out.to(dtype=torch.float64))
 
         # for batch_i in range(act.shape[0]):
@@ -300,7 +297,7 @@ def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_di
 
 
 @torch.no_grad()
-def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, logger=None):
+def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):
     """
     For this to work on LLama Models we would have to use a nonlinear function on
         X @ W to create positional embeddings (RoPE for llama).
@@ -310,7 +307,10 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, logger=None):
 
     def hook(module: torch.nn.Linear, inp, out):
         # try:
-        proj_out = out.detach().to(dtype=torch.float64, device="cpu")
+        proj_out = out.detach().to(dtype=torch.float64, device="cpu")  # [B,T, d_model]
+        proj = proj_out.view(-1, d_model)  # [B*T, d_model]
+        C_proj = proj.T @ proj
+        C_proj = C_proj.to(device="cpu")
         for h in range(n_heads):
             # weight_head = module.weight[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
 
@@ -320,11 +320,12 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, logger=None):
             # # act = torch.nn.functional.gelu(proj).to(device="cpu", dtype=torch.float64)
             # cov_list[layer_idx][h] += (proj.T @ proj).to(device="cpu", dtype=torch.float64)
 
-            h_proj = (
-                proj_out[:, :, h * head_dim : (h + 1) * head_dim].contiguous().view(-1, head_dim)
-            )
-            act = h_proj.to(device="cpu")
-            cov_list[layer_idx][h] += act.T @ act
+            # h_proj = (
+            #     proj_out[:, :, h * head_dim : (h + 1) * head_dim].contiguous().view(-1, head_dim)
+            # )
+            # act = h_proj.to(device="cpu")
+            h_proj = C_proj[h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim]
+            cov_list[layer_idx][h] += h_proj
 
     # except Exception as e:
     #     if logger:

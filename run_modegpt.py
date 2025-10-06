@@ -10,7 +10,8 @@ from compress_nystrom import compress_mlp
 from compress_svd import compress_vo
 from compression_utils import allocate_global_sparsity
 from eval import compute_perplexity, load_calibration_texts, load_eval_texts
-from model_utils import load_model, save_model
+from model_utils import load_model, reload_compressed_model, save_compressed_model, save_model
+from patchers.opt_patch import patch_config
 
 logger = logging.getLogger("MoDeGPT")
 logger.setLevel(logging.INFO)
@@ -98,13 +99,14 @@ def main():
             source_model_name=args.model,
         )
 
+    slice_vo_qk = True
     if "qk" not in skip:
         compress_qk(
             model=model,
             cov=(cov_q, cov_k),
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=True,
+            slice_dims=slice_vo_qk,
         )
 
         save_model(
@@ -120,7 +122,7 @@ def main():
             cov=cov_x,
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=True,
+            slice_dims=slice_vo_qk,
         )
 
         save_model(
@@ -130,22 +132,25 @@ def main():
             source_model_name=args.model,
         )
 
-    save_model(
+    patch_config(model)
+    save_compressed_model(
         model,
         tokenizer,
-        save_dir=f"{args.output_dir}",
+        rebuild_path="./patchers/OPTRebuild.py",
+        save_dir=args.output_dir,
         source_model_name=args.model,
     )
-    # del model
-    # torch.cuda.empty_cache()
-    # model, tokenizer, config = load_model(args.output_dir)
 
-    # if "vo" not in skip:
-    from compression_utils import patch_forward_OPT
+    del model
+    torch.cuda.empty_cache()
+    model, tokenizer = reload_compressed_model(args.output_dir)
 
-    patch_forward_OPT(
-        model,
-    )
+    # if slice_vo_qk:
+    #     from compression_utils import patch_OPT
+
+    #     patch_OPT(
+    #         model,
+    #     )
 
     model.cuda()
     compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)

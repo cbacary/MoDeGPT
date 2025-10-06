@@ -2,5 +2,6 @@ __pycache__/
 compressed_output/
 logs/
 calibs/
+*.pt
 .venv/
 uv.lock

@@ -37,9 +37,7 @@ def load_model(model_name: str, device: int = 0):
         raise
 
 
-def save_model(
-    model: torch.nn.Module, tokenizer, save_dir: str, source_model_name: str
-):
+def save_model(model: torch.nn.Module, tokenizer, save_dir: str, source_model_name: str):
     """
     Save the compressed model and tokenizer without changing the model structure,
     only saving the weights.
@@ -62,19 +60,45 @@ def save_model(
         raise
 
 
+def save_compressed_model(
+    model: torch.nn.Module, tokenizer, rebuild_path: str, save_dir: str, source_model_name: str
+):
+    import shutil
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    model.save_pretrained(save_dir, torch_dtype=torch.float16)
+    tokenizer.save_pretrained(save_dir)
+
+    shutil.copy(rebuild_path, save_dir)
+
+    with open(os.path.join(save_dir, "tokenizer_source.txt"), "w") as f:
+        f.write(source_model_name.strip())
+
+    logger.info(f"✔ Model, tokenizer, and tokenizer_source.txt saved to {save_dir}")
+
+
 def reload_compressed_model(model_dir: str, device: int = 0):
     """
+
+    patch_config() must be called first.
+
+    the following probably some more auto-generated vibe coded chatgpt garbage
+    left by the person who wrote the broken code i recieved.
+    next time someone tells you vibe coding is great.
+    just know, that this repository was completely broken and
+    failed compression at EVERY step. Completely failed implementation
+    of the paper. so i leave this comment. and the following chatgpt comment as a tribute.
+    - P.S it would have been easeir had i deleted all the code chatgpt wrote cause all of it was wrong.
+
     Reload the compressed model and tokenizer,
     assuming that the model structure remains unchanged and only the parameters have been compressed.
-    """
     try:
         logger.info(f"Reloading compressed model from: {model_dir}")
         tokenizer_source_path = os.path.join(model_dir, "tokenizer_source.txt")
 
         if not os.path.exists(tokenizer_source_path):
-            raise FileNotFoundError(
-                "Missing tokenizer_source.txt. Cannot reload tokenizer."
-            )
+            raise FileNotFoundError("Missing tokenizer_source.txt. Cannot reload tokenizer.")
 
         with open(tokenizer_source_path, "r") as f:
             tokenizer_source = f.read().strip()
@@ -96,22 +120,43 @@ def reload_compressed_model(model_dir: str, device: int = 0):
         logger.error(f"[Error] Failed to reload compressed model from {model_dir}: {e}")
         raise
 
+    """
+    logger.info(f"Reloading compressed model from: {model_dir}")
+    tokenizer_source_path = os.path.join(model_dir, "tokenizer_source.txt")
+
+    if not os.path.exists(tokenizer_source_path):
+        raise FileNotFoundError("Missing tokenizer_source.txt. Cannot reload tokenizer.")
+
+    with open(tokenizer_source_path, "r") as f:
+        tokenizer_source = f.read().strip()
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_dir, torch_dtype=torch.float16, low_cpu_mem_usage=True, trust_remote_code=True
+    )
+    model.to(f"cuda:{device}")
+    logger.info(f"✔ Reloaded compressed model to cuda:{device} successfully.")
+
+    model.eval()
+    return model, tokenizer
+
 
 def get_model_attrs(model):
+    """
+    returns:
+    `n_layers, n_heads, d_model, head_dim, arch`
+    """
     config = model.config
     n_layers = (
         getattr(config, "n_layer", None)
         or getattr(config, "num_hidden_layers", None)
         or getattr(config, "num_layers", None)
     )
-    n_heads = getattr(config, "n_head", None) or getattr(
-        config, "num_attention_heads", None
-    )
+    n_heads = getattr(config, "n_head", None) or getattr(config, "num_attention_heads", None)
     d_model = getattr(config, "hidden_size", None) or getattr(config, "dim", None)
     head_dim = d_model // n_heads
-    logger.info(
-        f"n_layers={n_layers}, n_heads={n_heads}, d_model={d_model}, head_dim={head_dim}"
-    )
+    logger.info(f"n_layers={n_layers}, n_heads={n_heads}, d_model={d_model}, head_dim={head_dim}")
 
     if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
         arch = "gpt"

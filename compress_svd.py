@@ -59,7 +59,7 @@ def compress_vo(
                 layer_idx=layer,
                 new_heads_V=new_heads_V,
                 new_heads_O=new_heads_O,
-                bias=False,
+                bias=True,
             )
 
         if logger:
@@ -114,8 +114,8 @@ def compress_head(
     # [H, H] @ [H, H]
     compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
 
-    # print(f"compressed_v shape {compressed_v.shape}")
-    # print(f"compressed_o shape {compressed_o.shape}")
+    # compressed_v = compressed_v.T
+    # compressed_o = compressed_o.T
 
     if slice_dims:
         new_heads_V.append(compressed_v.T)

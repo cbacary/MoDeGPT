@@ -6,9 +6,45 @@ from transformers import Cache
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.models.opt.modeling_opt import eager_attention_forward
 
+from calibration import get_model_attrs
+
+from transformers.models.opt.modeling_opt import OPTDecoderLayer
+
 logger = logging.getLogger("MoDeGPT")
 
 
+def patch_config(model: torch.nn.Module):
+    config = model.config
+
+    n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
+
+    # handle qk/vo separately in case only one stage is used
+    qk_ranks = []
+    vo_ranks = []
+    gate_ranks = []
+    for layer in range(n_layers):
+        block: OPTDecoderLayer = model.model.decoder.layers[layer]
+        up_weight = block.fc1.weight
+        query_weight = block.self_attn.q_proj.weight
+        value_weight = block.self_attn.v_proj.weight
+
+        q_rank = query_weight.shape[0]  # v/o
+        v_rank = value_weight.shape[0]  # q/k
+        gate_rank = up_weight.shape[0]  # u/d
+
+        qk_ranks.append(q_rank)
+        vo_ranks.append(v_rank)
+        gate_ranks.append(gate_rank)
+
+    # just break these values so we know where's something's going wrong later
+    config.ffn_dim = -1
+    config.qk_ranks = qk_ranks
+    config.vo_ranks = vo_ranks
+    config.gate_ranks = gate_ranks
+    config.auto_map = {"AutoModelForCausalLM": "OPTRebuild.OPTForCausalLM"}
+
+
+#### NOTE TO SELF: see OPTDecoderLayer.final_layer_norm #####
 @torch.no_grad()
 def patched_forward(
     self,
@@ -37,13 +73,19 @@ def patched_forward(
     value_states = self.v_proj(hidden_states)
 
     new_total_q_dim = query_states.shape[-1]
-    new_head_dim = new_total_q_dim // self.num_heads
+    new_q_head_dim = new_total_q_dim // self.num_heads
     new_total_k_dim = key_states.shape[-1]
     new_k_head_dim = new_total_k_dim // self.num_heads
     new_total_v_dim = value_states.shape[-1]
     new_v_head_dim = new_total_v_dim // self.num_heads
 
-    query_states = query_states.view(bsz, -1, self.num_heads, new_head_dim).transpose(1, 2)
+    print(f"q.shape = {query_states.shape} -- {new_q_head_dim}")
+    print(f"k.shape = {key_states.shape} -- {new_k_head_dim}")
+    print(f"v.shape = {value_states.shape} -- {new_v_head_dim}")
+    print(f"self.embed_dim = {self.embed_dim}")
+    print(f"hidden_states.size() = {hidden_states.size()}")
+
+    query_states = query_states.view(bsz, -1, self.num_heads, new_q_head_dim).transpose(1, 2)
 
     key_states = key_states.view(bsz, -1, self.num_heads, new_k_head_dim).transpose(1, 2)
     value_states = value_states.view(bsz, -1, self.num_heads, new_v_head_dim).transpose(1, 2)
@@ -76,7 +118,9 @@ def patched_forward(
         **kwargs,
     )
 
+    print(f"attn_output.shape = {attn_output.shape}")
     attn_output = attn_output.reshape(bsz, tgt_len, -1).contiguous()
+    print(f"reshaped_attn_output.shape = {attn_output.shape}")
     attn_output = self.out_proj(attn_output)
 
     if not output_attentions:

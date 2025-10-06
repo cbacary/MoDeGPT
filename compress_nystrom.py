@@ -51,7 +51,6 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
         rank_i = max(1, min(rank_i, D_int))
 
         C_ridge = C + (ridge_lambda * torch.eye(D_int, device=C.device))
-        inv_term = torch.linalg.inv(C_ridge)
         s_i = torch.linalg.solve(C_ridge.T, C.T).T
         # s_i = inv_term @ C
         scores = torch.diag(s_i)
@@ -61,27 +60,17 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
             dtype=torch.bool, device="cuda"
         )
 
-        print(f"Shape of s_i {s_i.shape}")
-        print(f"Shape of scores {scores.shape}")
-        print(f"Shape of topk {topk.shape}")
-        # THIS IS WRONG. THis is only taking the first rank_i cols which makes it take actually
-        # the WRONG colums from this thing. (Same thing could be wrong with CR)
         Sk = torch.eye(D_int, device=C.device, dtype=torch.float64)[
             :, topk_selector
         ]  # [D_int, rank_i]
 
-        W_u = W_u.to(torch.float64).clone().to("cuda")  # [D_int, D_h]
-        W_d = W_d.to(torch.float64).clone().to("cuda")  # [D_h, D_int]
-
-        # W_u.data.zero_()
-        # W_d.data.zero_()
-
-        # W_u.data[topk_selector, :] = W_u_cloned[topk_selector, :].to(W_u.data)
+        W_u = W_u.to(dtype=torch.float64, device="cuda")  # [D_int, D_h]
+        W_d = W_d.to(dtype=torch.float64, device="cuda")  # [D_h, D_int]
 
         # W_u.T @ Sk =
         # = [D_h, D_int] @ [D_int, rank_i]
         # = [D_h, rank_i]
-        W_u_proj = W_u.T @ Sk  # [r, D_h]
+        W_u_proj = W_u.T @ Sk
         new_bias_u = bias_u[topk_selector]
 
         # Sk.T @ (C @ Sk) =
@@ -101,14 +90,6 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
         # = [rank_i, rank_i] @ [rank_i, D_h]
         # = [rank_i, D_h]
         W_d_proj = C_Sk_proj @ down_SK_proj  # as in paper
-
-        # [rank_i, rank_i] @ [rank_i, D_int] =
-        # = [rank_i, D_int]
-        # Sk_w_d = C_Sk_proj @ down_SK_proj  # modified
-        # print(Sk_w_d)
-        # W_d.data[:, Sk_w_d]
-
-        # W_d_proj = W_d @ C @ Sk @ C_JJ_inv  # [D_h, r]
 
         if slice_dims:
             slice_gate_dims(
