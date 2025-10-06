@@ -312,18 +312,6 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None
         C_proj = proj.T @ proj
         C_proj = C_proj.to(device="cpu")
         for h in range(n_heads):
-            # weight_head = module.weight[h * head_dim : (h + 1) * head_dim, :].to(torch.float64)
-
-            # d_inp = inp[0].view(-1, weight_head.shape[1]).to(torch.float64)
-
-            # proj = d_inp @ weight_head.T
-            # # act = torch.nn.functional.gelu(proj).to(device="cpu", dtype=torch.float64)
-            # cov_list[layer_idx][h] += (proj.T @ proj).to(device="cpu", dtype=torch.float64)
-
-            # h_proj = (
-            #     proj_out[:, :, h * head_dim : (h + 1) * head_dim].contiguous().view(-1, head_dim)
-            # )
-            # act = h_proj.to(device="cpu")
             h_proj = C_proj[h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim]
             cov_list[layer_idx][h] += h_proj
 
