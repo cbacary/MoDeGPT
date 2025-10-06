@@ -42,10 +42,32 @@ def load_calibration_texts(calib_size, model, tokenizer, batch_size: int):
     return batches
 
 
-def load_eval_texts(eval_size):
+def load_eval_texts(eval_size, model, tokenizer, batch_size):
+    eval_size = int(eval_size)
+    batch_size = int(batch_size)
+
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
     texts = [t for t in dataset["validation"]["text"] if len(t.strip()) > 0]
-    return texts if eval_size == "all" else texts[: int(eval_size)]
+
+    joined_texts = "\n".join(texts)
+    chunked = chunk_text(
+        model=model, tokenizer=tokenizer, long_texts=joined_texts, min_threshold=2048
+    )
+
+    np.random.seed(1234)
+    batches = []
+    for i in range(0, eval_size, batch_size):
+        batches.append(
+            np.random.choice(
+                chunked,
+                size=int(batch_size),
+                replace=False,
+            ).tolist()
+        )
+
+    return batches
+
+    # return texts if eval_size == "all" else texts[: int(eval_size)]
 
 
 def chunk_text(model, tokenizer, long_texts: str, stride: int = 0, min_threshold: int = 10):
@@ -78,40 +100,22 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
     if max_length is None or max_length > 4096:
         max_length = 2048
 
-    full_text = "\n".join([t.strip() for t in texts if len(t.strip()) > 0])
-    logger.info(f"Computing perplexity on text of length {len(full_text)}")
-
-    inputs = tokenizer(
-        full_text,
-        return_tensors="pt",
-        truncation=False,
-        padding=False,
-    ).to(device)
-
-    input_ids = inputs["input_ids"][0]
-    print(inputs["input_ids"].shape)
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    for start_idx in range(0, len(input_ids), max_length):
-        end_idx = min(start_idx + max_length, len(input_ids))
-        input_chunk = input_ids[start_idx:end_idx].unsqueeze(0)
-
-        if input_chunk.size(1) < 2:
-            continue
-
-        labels = input_chunk.clone()
-        attention_mask = (input_chunk != tokenizer.pad_token_id).long()
-
-        outputs = model(input_ids=input_chunk, labels=labels, attention_mask=attention_mask)
+    for count, batch in enumerate(texts):
+        inputs = tokenizer(
+            batch, return_tensors="pt", padding=True, truncation=True, max_length=2048
+        ).to(device="cuda")
+        print(f"inputs['input_ids'].shape = {inputs['input_ids'].shape}")
+        outputs = model(**inputs, labels=inputs["input_ids"])
         loss = outputs.loss
 
         if not torch.isfinite(loss):
+            print("not torch.isfinite(loss)")
             continue
 
-        total_loss += loss.item() * (input_chunk.size(1) - 1)
-        total_tokens += input_chunk.size(1) - 1
+        num_tokens = inputs["attention_mask"].sum().item()
+        print(num_tokens)
+        total_tokens += num_tokens
+        total_loss += loss.item() * num_tokens
 
     if total_tokens == 0:
         raise ValueError("No valid tokens to compute perplexity!")

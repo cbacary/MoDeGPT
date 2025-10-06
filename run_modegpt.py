@@ -50,7 +50,9 @@ def main():
     calib_texts = load_calibration_texts(
         args.calib_size, model, tokenizer, batch_size=int(args.calibs_batch_size)
     )
-    eval_texts = load_eval_texts(args.eval_size)
+    eval_texts = load_eval_texts(
+        args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
+    )
 
     logger.info("Evaluating original model (for baseline perplexity)...")
     baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
