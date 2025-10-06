@@ -31,3 +31,12 @@ python run_modegpt.py
   --calibs_batch_size 4 
   --load_calibs_from ./calibs/calibs-sz128.pt
 ```
+
+
+### 3. Additional Information
+
+Currently only tested on OPT models. QK compression currently underperforms the paper performance, but all other stages approximate the papers' performance very well.
+
+To implement for llama models you will have to modify the qk compression stage (`compress_cr.py`) to support the rotary positional embeddings (RoPE). Additionally, llama models use an additional gate matrix for the mlp compression (`compress_nystrom.py`) which will have to be added.
+
+Additionally, you will have to create your own patched version of modeling_llama. See `patchers/OPTRebuild.py` and the `patch_config` function in `patchers/opt_patch.py` which will also be required to save and load the compressed model. This is a pretty easy process that just requires changing the dimensions of the linear layers when they are initialized to the compressed dimensions. 
