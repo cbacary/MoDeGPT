@@ -79,48 +79,6 @@ def save_compressed_model(
 
 
 def reload_compressed_model(model_dir: str, device: int = 0):
-    """
-
-    patch_config() must be called first.
-
-    the following probably some more auto-generated vibe coded chatgpt garbage
-    left by the person who wrote the broken code i recieved.
-    next time someone tells you vibe coding is great.
-    just know, that this repository was completely broken and
-    failed compression at EVERY step. Completely failed implementation
-    of the paper. so i leave this comment. and the following chatgpt comment as a tribute.
-    - P.S it would have been easeir had i deleted all the code chatgpt wrote cause all of it was wrong.
-
-    Reload the compressed model and tokenizer,
-    assuming that the model structure remains unchanged and only the parameters have been compressed.
-    try:
-        logger.info(f"Reloading compressed model from: {model_dir}")
-        tokenizer_source_path = os.path.join(model_dir, "tokenizer_source.txt")
-
-        if not os.path.exists(tokenizer_source_path):
-            raise FileNotFoundError("Missing tokenizer_source.txt. Cannot reload tokenizer.")
-
-        with open(tokenizer_source_path, "r") as f:
-            tokenizer_source = f.read().strip()
-
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
-
-        model = AutoModelForCausalLM.from_pretrained(
-            model_dir,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
-        )
-        model.to(f"cuda:{device}")
-        logger.info(f"✔ Reloaded compressed model to cuda:{device} successfully.")
-
-        model.eval()
-        return model, tokenizer
-
-    except Exception as e:
-        logger.error(f"[Error] Failed to reload compressed model from {model_dir}: {e}")
-        raise
-
-    """
     logger.info(f"Reloading compressed model from: {model_dir}")
     tokenizer_source_path = os.path.join(model_dir, "tokenizer_source.txt")
 
