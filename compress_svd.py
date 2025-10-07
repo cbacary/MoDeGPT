@@ -84,9 +84,9 @@ def compress_head(
 ) -> tuple[Tensor, Tensor]:
     # head_start_idx, head_end_idx
     head_s, head_e = head_idx * head_dim, (head_idx + 1) * head_dim
-    # Hd = head_dims, H = hidden dimensions
-    # V_head [Hd, H], O_head [H, Hd]
-    # sqrt_C [H, H]
+    # head_dims = head_dims, d_model = hidden dimensions
+    # V_head [head_dims, d_model], O_head [d_model, head_dims]
+    # sqrt_C [d_model, d_model]
 
     V_head = W_v[head_s:head_e, :].to(dtype=torch.float64, device="cuda")
     O_head = W_o[:, head_s:head_e].to(dtype=torch.float64, device="cuda")
@@ -95,10 +95,10 @@ def compress_head(
     # but torch stores weights as (out_features, in_features)
     U, _S, V = torch.linalg.svd(sqrt_C @ V_head.T, full_matrices=False)
 
-    # sqrt_C @ V_head.T [H, Hd]
-    # U [H, Hd], S [Hd, Hd], V [Hd, Hd]
+    # sqrt_C @ V_head.T [d_model, head_dims]
+    # U [d_model, head_dims], S [head_dims, head_dims], V [head_dims, head_dims]
 
-    S = torch.diag(_S)  # [Hd, Hd]
+    S = torch.diag(_S)  # [head_dims, head_dims]
 
     A = S @ V @ O_head.T  # once again transpose O_head
     # There is marginal difference (from minimal testing) between full_matrices=False|True
@@ -106,12 +106,12 @@ def compress_head(
 
     S_p = torch.diag(_S_p)
 
-    # A [Hd, H]
-    # U_p [Hd, Hd], S_p [H, H], V_p [H, H]
+    # A [head_dims, d_model]
+    # U_p [head_dims, head_dims], S_p [d_model, d_model], V_p [d_model, d_model]
 
-    # [H, H] @ [H, Hd] @ [Hd, H] = [H, Hd] @ [Hd, Hd] = [H, Hd]
+    # [d_model, d_model] @ [d_model, head_dims] @ [head_dims, d_model] = [d_model, head_dims] @ [head_dims, head_dims] = [d_model, head_dims]
     compressed_v = (inv_sqrt_C @ U @ U_p)[:, :rank_i]
-    # [H, H] @ [H, H]
+    # [d_model, d_model] @ [d_model, d_model]
     compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
 
     # compressed_v = compressed_v.T

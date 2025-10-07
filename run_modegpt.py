@@ -4,8 +4,8 @@ import os
 
 import torch
 
-from calibration import load_calibs
-from compress_cr import compress_qk
+from calibration import get_model_attrs, load_calibs
+from compress_cr import compress_qk, compress_qk_svd
 from compress_nystrom import compress_mlp
 from compress_svd import compress_vo
 from compression_utils import allocate_global_sparsity
@@ -81,6 +81,9 @@ def main():
         logger.info(f"Loading local model path {local_path}")
         model, tokenizer, config = load_model(local_path)
 
+    n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
+    logger.info(f"arch == {arch}")
+
     torch.cuda.empty_cache()
     model.cuda()
     model.eval()
@@ -103,13 +106,22 @@ def main():
 
     slice_vo_qk = True
     if "qk" not in skip:
-        compress_qk(
-            model=model,
-            cov=(cov_q, cov_k),
-            keep_ratios=layer_keep_ratios,
-            ridge_lambda=ridge_lambda,
-            slice_dims=slice_vo_qk,
-        )
+        if arch == "opt":
+            compress_qk_svd(
+                model=model,
+                cov_x=cov_x,
+                keep_ratios=layer_keep_ratios,
+                ridge_lambda=ridge_lambda,
+                slice_dims=True,
+            )
+        else:
+            compress_qk(
+                model=model,
+                cov=(cov_q, cov_k),
+                keep_ratios=layer_keep_ratios,
+                ridge_lambda=ridge_lambda,
+                slice_dims=slice_vo_qk,
+            )
 
         save_model(
             model,

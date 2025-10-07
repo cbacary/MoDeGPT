@@ -104,9 +104,7 @@ def __calibrate_model(
         for _ in range(n_layers)
     ]
     # correlation input for type 3 compression, with d_h x d_h shape (hidden dimension x hidden dimension)
-    cov_x_list = [
-        torch.zeros(d_model, d_model, dtype=torch.float64) for _ in range(n_layers)
-    ]
+    cov_x_list = [torch.zeros(d_model, d_model, dtype=torch.float64) for _ in range(n_layers)]
 
     bi_scores = [0.0 for _ in range(n_layers)]
 
@@ -116,22 +114,16 @@ def __calibrate_model(
     for i, block in enumerate(transformer_blocks):
         if arch == "gpt":
             handles.append(
-                block.mlp.c_fc.register_forward_hook(
-                    _make_fc_hook(i, cov_mlp_list, logger)
-                )
+                block.mlp.c_fc.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
             )
             handles.append(
                 block.attn.c_attn.register_forward_hook(
-                    _make_attn_hook(
-                        i, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger
-                    )
+                    _make_attn_hook(i, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger)
                 )
             )
         elif arch == "opt":
             # mlp_weights.append((block.fc1, block.activation_fn))
-            handles.append(
-                block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
-            )
+            handles.append(block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger)))
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
                     _make_proj_hook(i, cov_q_list, n_heads, head_dim, d_model, logger)
@@ -144,9 +136,7 @@ def __calibrate_model(
             )
         elif arch == "llama":
             handles.append(
-                block.mlp.gate_proj.register_forward_hook(
-                    _make_fc_hook(i, cov_mlp_list, logger)
-                )
+                block.mlp.gate_proj.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
             )
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
@@ -237,9 +227,7 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
 
 
 @torch.no_grad()
-def _make_attn_hook(
-    layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger=None
-):
+def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger=None):
     def hook(module, inp, out):
         try:
             out = out.detach().to(dtype=torch.float64, device="cpu")
@@ -275,9 +263,7 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None
         C_proj = proj.T @ proj
         C_proj = C_proj.to(device="cpu")
         for h in range(n_heads):
-            h_proj = C_proj[
-                h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim
-            ]
+            h_proj = C_proj[h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim]
             cov_list[layer_idx][h] += h_proj
 
     # except Exception as e:

@@ -14,6 +14,128 @@ logger = logging.getLogger("MoDeGPT")
 
 #### NOTE: see OPTDecoderLayer.final_layer_norm
 @torch.no_grad()
+def compress_qk_svd(
+    model,
+    cov_x: list[Tensor],
+    keep_ratios,
+    rank=None,
+    ridge_lambda=1,
+    slice_dims=True,
+):
+    """
+    QK compression using SVD instead of CR decomposition
+    """
+    n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
+
+    for layer in range(n_layers):
+        # try:
+        keep_ratio = keep_ratios[layer]
+        rank_i = int(head_dim * keep_ratio) if rank is None else rank
+        rank_i = max(1, min(rank_i, head_dim))
+
+        C = cov_x[layer].to(device="cuda", dtype=torch.float64)
+        sqrt_C = sqrt_M(C)
+        inv_sqrt_C = torch.linalg.inv(sqrt_C)
+
+        try:
+            block = model.model.decoder.layers[layer]  # OPT
+            W_q = block.self_attn.q_proj.weight
+            W_k = block.self_attn.k_proj.weight
+            bias_q: Tensor = block.self_attn.q_proj.bias
+            bias_k: Tensor = block.self_attn.k_proj.bias
+        except AttributeError:
+            try:
+                block = model.transformer.h[layer]  # GPT (unsupported)
+                raise NotImplementedError("GPT packed QKV not supported in Type-II compression.")
+            except AttributeError:
+                block = model.model.layers[layer]  # LLaMA
+                W_q = block.self_attn.q_proj.weight
+                bias_q: Tensor = block.self_attn.q_proj.bias
+                W_k = block.self_attn.k_proj.weight
+                bias_k: Tensor = block.self_attn.k_proj.bias
+
+        new_Q_heads = []
+        new_K_heads = []
+        bias_Q_heads = []
+        bias_K_heads = []
+        for h in range(n_heads):
+            h_start = h * head_dim
+            h_end = (h + 1) * head_dim
+
+            Q_head: Tensor = W_q[h_start:h_end, :].to(C)
+            Q_head_bias: Tensor = bias_q[h_start:h_end].to(C)
+            K_head: Tensor = W_k[h_start:h_end, :].to(C)
+            K_head_bias: Tensor = bias_k[h_start:h_end].to(C)
+
+            u, s, v = torch.linalg.svd(sqrt_C @ Q_head.T, full_matrices=False)
+            s = torch.diag(s)
+
+            # print(f"u.shape = {u.shape}")
+            # print(f"s.shape = {s.shape}")
+            # print(f"v.shape = {v.shape}")
+
+            u_p, s_p, v_p = torch.linalg.svd(s @ v @ K_head)
+            s_p = torch.diag(s_p)
+
+            Q = (inv_sqrt_C @ u @ u_p)[:, :rank_i]
+            K = s_p[:rank_i, :rank_i] @ v_p[:rank_i]
+
+            # print(f"Q_head.shape = {Q_head.shape}")  # [d_model, d_model]
+            # print(f"u.shape = {u.shape}")  # [d_model, d_model]
+            # print(f"s.shape = {s.shape}")  # [d_model]
+            # print(f"v.shape = {v.shape}")  # [d_model, d_model]
+            # print(f"inv_sqrt_C.shape = {inv_sqrt_C.shape}")  # [d_model, d_model]
+
+            # Q = inv_sqrt_C @ u[:, :rank_i]  # [d_model, rank_i]
+            # K = v[:, :rank_i] @ torch.diag_embed(s[:rank_i])  # [d_model, rank_i]
+            alpha = torch.sqrt(
+                torch.abs(K).max() / torch.abs(Q.T).max()
+            )  # make Q K of similar scale
+            # print(f"Q.shape = {Q.shape}")  # [d_model, d_model]
+            Q = Q * alpha
+            K /= alpha
+
+            # print(f"Q.shape = {Q.shape}")
+            # print(f"K.shape = {K.shape}")
+
+            new_Q_heads.append(Q.T)
+            new_K_heads.append(K)
+
+            new_bias_Q = (torch.pinverse(Q) @ Q_head.T @ Q_head_bias.view(-1, 1)).view(-1)
+            new_bias_K = (torch.pinverse(K.T) @ K_head.T @ K_head_bias.view(-1, 1)).view(-1)
+
+            bias_Q_heads.append(new_bias_Q)
+            bias_K_heads.append(new_bias_K)
+
+            # Q_new = Q_head.T @ Sk  # dont trust this, gotta rethink about that
+            # K_new = K_head.T @ Sk
+            # bias_q_new = bias_q[h_start:h_end][topk_selector]
+            # bias_k_new = bias_k[h_start:h_end][topk_selector]
+            # new_Q_heads.append(Q_new.T)
+            # new_K_heads.append(K_new.T)
+            # bias_Q_heads.append(bias_q_new)
+            # bias_K_heads.append(bias_k_new)
+
+        ####
+
+        slice_QK_dims(
+            model=model,
+            layer_idx=layer,
+            new_heads_Q=new_Q_heads,
+            new_heads_K=new_K_heads,
+            new_bias_Q=bias_Q_heads,
+            new_bias_K=bias_K_heads,
+            bias=False,
+        )
+
+        if logger:
+            logger.info(
+                f"[QK] ✅ Layer {layer}: compressed to rank {rank_i} per head (CR-score + interpolation)"
+            )
+
+
+#### NOTE: see OPTDecoderLayer.final_layer_norm
+@torch.no_grad()
 def compress_qk(
     model,
     cov,
@@ -85,84 +207,26 @@ def compress_qk(
             Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
             K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
 
-            if slice_dims:
-                # bias_q_new = torch.zeros(rank_i).to(dtype=bias_q.dtype, device=bias_q.device)
-                # bias_k_new = torch.zeros(rank_i).to(dtype=bias_k.dtype, device=bias_k.device)
-                Q_new = Q_head.T @ Sk  # dont trust this, gotta rethink about that
-                K_new = K_head.T @ Sk
-                bias_q_new = bias_q[h_start:h_end][topk_selector]
-                bias_k_new = bias_k[h_start:h_end][topk_selector]
-                new_Q_heads.append(Q_new.T)
-                new_K_heads.append(K_new.T)
-                bias_Q_heads.append(bias_q_new)
-                bias_K_heads.append(bias_k_new)
-            else:
-                # im pretty sure this should be the same, we just take the mask of Q,K
-                # using the topk_selector
-                Q_new = torch.zeros_like(Q_head).to(dtype=Q_head.dtype, device=Q_head.device)
-                K_new = torch.zeros_like(K_head).to(dtype=K_head.dtype, device=K_head.device)
-                bias_q_new = torch.zeros(head_dim).to(dtype=bias_q.dtype, device=bias_q.device)
-                bias_k_new = torch.zeros(head_dim).to(dtype=bias_k.dtype, device=bias_k.device)
+            Q_new = Q_head.T @ Sk  # dont trust this, gotta rethink about that
+            K_new = K_head.T @ Sk
+            bias_q_new = bias_q[h_start:h_end][topk_selector]
+            bias_k_new = bias_k[h_start:h_end][topk_selector]
+            new_Q_heads.append(Q_new.T)
+            new_K_heads.append(K_new.T)
+            bias_Q_heads.append(bias_q_new)
+            bias_K_heads.append(bias_k_new)
 
-                Q_new[topk_selector, :] = Q_head[topk_selector, :]
-                K_new[topk_selector, :] = K_head[topk_selector, :]
-                bias_q_new[topk_selector] = bias_q[h_start:h_end][topk_selector]
-                bias_k_new[topk_selector] = bias_k[h_start:h_end][topk_selector]
+        ####
 
-                Q_new = Q_new.to(dtype=W_q.dtype, device=W_q.device)
-                K_new = K_new.to(dtype=W_k.dtype, device=W_k.device)
-
-                bias_q.data[h_start:h_end].copy_(bias_q_new)
-                bias_k.data[h_start:h_end].copy_(bias_k_new)
-                W_q.data[h_start:h_end, :].copy_(Q_new)
-                W_k.data[h_start:h_end, :].copy_(K_new)
-
-            """"
-                
-                The original code from the MoDeGPT github i was originally given
-
-                topk = torch.topk(scores, k=rank_i, largest=True).indices
-                rest = torch.tensor([j for j in range(head_dim) if j not in topk], dtype=torch.long, device=topk.device)
-
-                 # === Q: row reconstruction
-                C_q_JJ = C_q[topk][:, topk]
-                ridge_q = ridge_lambda * torch.eye(rank_i, device="cuda")
-                pinv_q = torch.linalg.pinv(C_q_JJ + ridge_q)
-                alpha_q = C_q[rest][:, topk] @ pinv_q  # [|rest|, r]
-
-                W_q_h = W_q[h_start:h_end, :].float().to("cuda")  # [Hd, D]
-                W_q_new = torch.zeros_like(W_q_h)
-                W_q_new[topk, :] = W_q_h[topk, :]
-                if len(rest) > 0:
-                    W_q_new[rest, :] = alpha_q @ W_q_h[topk, :]
-                W_q[h_start:h_end, :].data.copy_(W_q_new.to(W_q.dtype).to(W_q.device))
-
-                # === K: row reconstruction
-                C_k_JJ = C_k[topk][:, topk]
-                ridge_k = ridge_lambda * torch.eye(rank_i, device="cuda")
-                pinv_k = torch.linalg.pinv(C_k_JJ + ridge_k)
-                alpha_k = C_k[rest][:, topk] @ pinv_k
-
-                W_k_h = W_k[h_start:h_end, :].float().to("cuda")  # [Hd, D]
-                W_k_new = torch.zeros_like(W_k_h)
-                W_k_new[topk, :] = W_k_h[topk, :]
-                if len(rest) > 0:
-                    W_k_new[rest, :] = alpha_k @ W_k_h[topk, :]
-                W_k[h_start:h_end, :].data.copy_(W_k_new.to(W_k.dtype).to(W_k.device))
-
-                
-                """
-
-        if slice_dims:
-            slice_QK_dims(
-                model=model,
-                layer_idx=i,
-                new_heads_Q=new_Q_heads,
-                new_heads_K=new_K_heads,
-                new_bias_Q=bias_Q_heads,
-                new_bias_K=bias_K_heads,
-                bias=True,
-            )
+        slice_QK_dims(
+            model=model,
+            layer_idx=i,
+            new_heads_Q=new_Q_heads,
+            new_heads_K=new_K_heads,
+            new_bias_Q=bias_Q_heads,
+            new_bias_K=bias_K_heads,
+            bias=True,
+        )
 
         if logger:
             logger.info(
