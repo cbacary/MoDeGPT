@@ -35,7 +35,7 @@ python run_modegpt.py
 
 ### 3. Additional Information
 
-Currently only tested on OPT models. QK compression currently underperforms the paper performance, but all other stages approximate the papers' performance very well.
+Currently only tested on OPT models.
 
 To implement for llama models you will have to modify the qk compression stage (`compress_cr.py`) to support the rotary positional embeddings (RoPE). Additionally, llama models use an additional gate matrix for the mlp compression (`compress_nystrom.py`) which will have to be added.
 
