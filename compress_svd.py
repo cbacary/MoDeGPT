@@ -97,7 +97,6 @@ def compress_head(
 
     # sqrt_C @ V_head.T [d_model, head_dims]
     # U [d_model, head_dims], S [head_dims, head_dims], V [head_dims, head_dims]
-
     S = torch.diag(_S)  # [head_dims, head_dims]
 
     A = S @ V @ O_head.T  # once again transpose O_head
@@ -109,7 +108,9 @@ def compress_head(
     # A [head_dims, d_model]
     # U_p [head_dims, head_dims], S_p [d_model, d_model], V_p [d_model, d_model]
 
-    # [d_model, d_model] @ [d_model, head_dims] @ [head_dims, d_model] = [d_model, head_dims] @ [head_dims, head_dims] = [d_model, head_dims]
+    # [d_model, d_model] @ [d_model, head_dims] @ [head_dims, d_model] =
+    # = [d_model, head_dims] @ [head_dims, head_dims] =
+    # = [d_model, head_dims]
     compressed_v = (inv_sqrt_C @ U @ U_p)[:, :rank_i]
     # [d_model, d_model] @ [d_model, d_model]
     compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]

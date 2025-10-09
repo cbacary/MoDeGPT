@@ -164,12 +164,20 @@ def __calibrate_model(
             x_out = hidden_states[l + 1].to(torch.float64)  # [B, T, D]
 
             # testing showed equivalent to cosine_similary(x_in, x_out)
-            bi_scores[l] = get_BI_score(x_in, x_out)
+            # bi_scores[l] = get_BI_score(x_in, x_out)
+            bi_scores[l] += (
+                torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0).mean().item()
+            )
+            cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device="cpu")
 
-            for batch_i in range(len(batch)):
-                # can be vectorized but thats not probably not a
-                batch_x_in = x_in[batch_i, :, :]
-                cov_x_list[l] += (batch_x_in.T @ batch_x_in).to(device="cpu")
+            # for batch_i in range(len(batch)):
+            # can be vectorized but thats not probably not a
+            # batch_x_in = x_in[batch_i, :, :]
+            # batch_x_out = x_out[batch_i, :, :]
+            # bi_scores[l] = (
+            #     1 - torch.cosine_similarity(batch_x_in, batch_x_out, dim=1).mean().item()
+            # )
+            # cov_x_list[l] += (batch_x_in.T @ batch_x_in).to(device="cpu")
 
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
     #####
@@ -179,6 +187,7 @@ def __calibrate_model(
 
     # cov_mlp_list[i] /= n_tokens
     for layer in range(n_layers):
+        bi_scores[layer] /= n_texts
         cov_x_list[layer] /= n_texts  # i dont think this matters but its here anyway
         for h in range(n_heads):
             cov_q_list[layer][h] /= n_texts

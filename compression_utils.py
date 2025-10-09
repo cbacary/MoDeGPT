@@ -56,19 +56,21 @@ def slice_QK_dims(
     # not sure what dims shold be here
     Q_heads = torch.cat(new_heads_Q, dim=0).to(device="cuda", dtype=torch.float16)
     K_heads = torch.cat(new_heads_K, dim=0).to(device="cuda", dtype=torch.float16)
-    bias_Q = torch.cat(new_bias_Q, dim=0).to(device="cuda", dtype=torch.float16)
-    bias_K = torch.cat(new_bias_K, dim=0).to(device="cuda", dtype=torch.float16)
+    if len(new_bias_Q):
+        bias_Q = torch.cat(new_bias_Q, dim=0).to(device="cuda", dtype=torch.float16)
+    if len(new_bias_K):
+        bias_K = torch.cat(new_bias_K, dim=0).to(device="cuda", dtype=torch.float16)
 
     new_layer_Q = torch.nn.Linear(
         in_features=Q_heads.shape[1],
         out_features=Q_heads.shape[0],
         device="cuda",
         dtype=torch.float16,
-        bias=True if original_q.bias is not None and bias else False,
+        bias=original_q.bias is not None and bias and len(new_bias_Q),
         # bias=False,
     )
     new_layer_Q.weight.data.copy_(Q_heads)
-    if original_q.bias is not None and bias:
+    if new_layer_Q.bias is not None:
         new_layer_Q.bias.data.copy_(bias_Q)
 
     new_layer_K = torch.nn.Linear(
@@ -76,11 +78,11 @@ def slice_QK_dims(
         out_features=K_heads.shape[0],
         device="cuda",
         dtype=torch.float16,
-        bias=True if original_k.bias is not None and bias else False,
+        bias=original_k.bias is not None and bias and len(new_bias_K),
         # bias=False,
     )
     new_layer_K.weight.data.copy_(K_heads)
-    if original_k.bias is not None and bias:
+    if new_layer_K.bias is not None:
         new_layer_K.bias.data.copy_(bias_K)
 
     self_attn.k_proj = new_layer_K
