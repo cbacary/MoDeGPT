@@ -6,43 +6,49 @@ import torch
 from compression_utils import slice_gate_dims
 from model_utils import get_model_attrs
 
+# from transformers.models.llama.modeling_llama
+
 logger = logging.getLogger("MoDeGPT")
+
+"""
+For llama models with up, gate, down:
+
+From the paper: W_U = [W_u.T , W_g.T].T,
+ --> I presume this means we have W_U: [2, D_hidden, D_int].mT 
+ --> W_U: [2, D_int, D_hidden]
+then:
+ --> C = 
+
+
+"""
 
 
 @torch.no_grad()
 def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
-    """
-    MoDeGPT Type-I Compression (MLP): Full Nyström approximation with ridge leverage scoring.
-    """
-    n_layers, _, _, _, _ = get_model_attrs(model)
+    n_layers, _, _, _, arch = get_model_attrs(model)
 
     for i in range(n_layers):
-        # Step 3: get weights
-        try:
-            block = model.model.decoder.layers[i]  # OPT
+        if arch == "opt":
+            block = model.model.decoder.layers[i]
             W_u = block.fc1.weight  # [D_int, D_h]
             W_d = block.fc2.weight  # [D_h, D_int]
             bias_u = block.fc1.bias
             bias_d = block.fc1.bias
             proj_u = block.fc1
             proj_d = block.fc2
-        except AttributeError:
-            block = model.transformer.h[i]  # GPT
-            proj_u = block.fc1
-            proj_d = block.fc2
-        except AttributeError:
-            try:
-                block = model.transformer.h[i]  # GPT
-                W_u = block.mlp.c_fc.weight
-                W_d = block.mlp.c_proj.weight
-                proj_u = block.mlp.c_fc
-                proj_d = block.mlp.c_proj
-            except AttributeError:
-                block = model.model.layers[i]  # LLaMA
-                proj_u = block.mlp.gate_proj
-                proj_d = block.mlp.down_proj
-                W_u = proj_u.weight
-                W_d = proj_d.weight
+        elif arch == "llama":
+            block = model.model.layers[i]
+            proj_up = block.mlp.up_proj  # [D_int, D_h]
+            proj_gate = block.mlp.gate_proj  # [D_int, D_h]
+            proj_d = block.mlp.down_proj  # [D_int, D_h]
+            W_u = proj_up.weight
+            W_g = proj_gate.weight
+            W_d = proj_d.weight
+            bias_u = proj_up.bias
+            bias_g = proj_gate.bias
+            bias_d = proj_d.bias
+
+            W_g = W_g.to(dtype=torch.float64, device="cuda")
 
         keep_ratio = keep_ratios[i]
         C = cov[i].to(dtype=torch.float64, device="cuda")  # [D_int, D_int]
@@ -71,6 +77,10 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
         # = [D_h, D_int] @ [D_int, rank_i]
         # = [D_h, rank_i]
         W_u_proj = W_u.T @ Sk
+        if arch == "llama":
+            W_g_proj = W_g.T @ Sk
+            new_bias_g = bias_g[topk_selector]
+
         new_bias_u = bias_u[topk_selector]
 
         # Sk.T @ (C @ Sk) =
@@ -97,6 +107,8 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
                 layer_idx=i,
                 up_weights=W_u_proj.T,
                 down_weights=W_d_proj.T,
+                gate_weights=None if arch != "llama" else W_g_proj,
+                new_bias_g=None if arch != "llama" else new_bias_g,
                 new_bias_u=new_bias_u,
                 bias=True,
             )

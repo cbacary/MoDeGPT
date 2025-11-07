@@ -41,7 +41,10 @@ def patch_config(model: torch.nn.Module):
     config.qk_ranks = qk_ranks
     config.vo_ranks = vo_ranks
     config.gate_ranks = gate_ranks
-    config.auto_map = {"AutoModelForCausalLM": "OPTRebuild.OPTForCausalLM"}
+    if arch == "opt":
+        config.auto_map = {"AutoModelForCausalLM": "OPTRebuild.OPTForCausalLM"}
+    if arch == "llama":
+        config.auto_map = {"AutoModelForCausalLM": "LlamaRebuild.LlamaForCausalLM"}
 
 
 #### NOTE TO SELF: see OPTDecoderLayer.final_layer_norm #####

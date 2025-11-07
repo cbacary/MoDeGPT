@@ -1,7 +1,6 @@
 # Type 2 compression
 
 
-from audioop import bias
 import logging
 
 import torch
@@ -167,11 +166,6 @@ def compress_qk(
     ridge_lambda=1,
     slice_dims=True,
 ):
-    """
-    MoDeGPT Type-II Compression (Q/K): Stable interpolation version using
-    MoDeGPT CR scores (||C_q^{1/2}[:,i]|| * ||C_k^{1/2}[:,i]||),
-    followed by row reconstruction (your original working logic).
-    """
     cov_q_list, cov_k_list = cov  # List[List[Tensor]] for Q and K respectively
 
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
@@ -182,22 +176,18 @@ def compress_qk(
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
         rank_i = max(1, min(rank_i, head_dim))
 
-        try:
+        if arch == "opt":
             block = model.model.decoder.layers[i]  # OPT
             W_q = block.self_attn.q_proj.weight
             W_k = block.self_attn.k_proj.weight
             bias_q = block.self_attn.q_proj.bias
             bias_k = block.self_attn.k_proj.bias
-        except AttributeError:
-            try:
-                block = model.transformer.h[i]  # GPT (unsupported)
-                raise NotImplementedError("GPT packed QKV not supported in Type-II compression.")
-            except AttributeError:
-                block = model.model.layers[i]  # LLaMA
-                W_q = block.self_attn.q_proj.weight
-                bias_q = block.self_attn.q_proj.bias
-                W_k = block.self_attn.k_proj.weight
-                bias_k = block.self_attn.k_proj.bias
+            bias = True
+        elif arch == "llama":
+            block = model.model.layers[i]  # LLaMA
+            W_q = block.self_attn.q_proj.weight
+            W_k = block.self_attn.k_proj.weight
+            bias = False
 
         new_Q_heads = []
         new_K_heads = []
@@ -232,13 +222,17 @@ def compress_qk(
 
             Q_new = Q_head.T @ Sk  # dont trust this, gotta rethink about that
             K_new = K_head.T @ Sk
-            bias_q_new = bias_q[h_start:h_end][topk_selector]
-            bias_k_new = bias_k[h_start:h_end][topk_selector]
             new_Q_heads.append(Q_new.T)
             new_K_heads.append(K_new.T)
-            bias_Q_heads.append(bias_q_new)
-            bias_K_heads.append(bias_k_new)
 
+            if bias:
+                bias_q_new = bias_q[h_start:h_end][topk_selector]
+                bias_k_new = bias_k[h_start:h_end][topk_selector]
+                bias_Q_heads.append(bias_q_new)
+                bias_K_heads.append(bias_k_new)
+            else:
+                bias_Q_heads = []
+                bias_K_heads = []
         ####
 
         slice_QK_dims(
@@ -248,7 +242,7 @@ def compress_qk(
             new_heads_K=new_K_heads,
             new_bias_Q=bias_Q_heads,
             new_bias_K=bias_K_heads,
-            bias=True,
+            bias=bias,
         )
 
         if logger:
@@ -259,3 +253,52 @@ def compress_qk(
     #     if logger:
     #         logger.error("Error: %s", e, exc_info=True)
     #         logger.warning(f"[QK] Compression failed at layer {i}: {e}")
+
+
+def compress_head_llama(
+    sqrt_C_q: Tensor, sqrt_C_k: Tensor, Q_head: Tensor, K_head: Tensor, rank: int
+):
+
+    # llama requires head dim divisible by two
+    rank = rank - (rank % 2)
+
+    normed_q_r1 = torch.norm(sqrt_C_q[..., : rank // 2], dim=0)  # norm for query rotary half 1
+    normed_q_r2 = torch.norm(sqrt_C_q[..., rank // 2 :], dim=0)
+    normed_k_r1 = torch.norm(sqrt_C_k[..., : rank // 2], dim=0)
+    normed_k_r2 = torch.norm(sqrt_C_k[..., rank // 2 :], dim=0)  # norm for key rotary half 2
+
+    final_norm = normed_q_r1**2 * normed_k_r1**2 + normed_q_r2**2 * normed_k_r2**2
+
+    topk = torch.topk(final_norm, k=rank // 2).indices
+    Sk = torch.cat((topk, topk + rank // 2))
+
+    new_Q_head = Q_head[Sk].to(Q_head).to(device="cpu")
+    new_K_head = K_head[Sk].to(K_head).to(device="cpu")
+
+    return new_Q_head, new_K_head
+
+
+def compress_head_opt(
+    sqrt_C_q: Tensor,
+    sqrt_C_k: Tensor,
+    Q_head: Tensor,
+    K_head: Tensor,
+    bias_Q_head: Tensor,
+    bias_K_head: Tensor,
+    rank: int,
+):
+    # symmetric matrix, dim doesnt matter
+    norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
+    norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
+    scores = norms_q * norms_k
+
+    # NOTE TO ME LATER::: Consider dims input into topk (does it work with vector norm above)
+    topk = torch.topk(scores, k=rank).indices
+
+    Q_new = Q_head[topk].to(device="cpu")
+    K_new = K_head[topk].to(device="cpu")
+
+    bias_q_new = bias_Q_head[topk]
+    bias_k_new = bias_K_head[topk]
+
+    return Q_new, K_new, bias_q_new, bias_k_new

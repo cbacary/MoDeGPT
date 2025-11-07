@@ -149,11 +149,16 @@ def slice_gate_dims(
     model,
     layer_idx: int,
     up_weights: Tensor,
+    gate_weights: Tensor | None,
     down_weights: Tensor,
+    new_bias_g: Tensor | None,
     new_bias_u: Tensor,
     bias: bool,
 ):
-    block, up, down, arch = get_gate_projs(model, layer_idx=layer_idx)
+    """
+    gate_weights, new_bias_g only used for llama
+    """
+    block, up, down, gate, arch = get_gate_projs(model, layer_idx=layer_idx)
 
     new_layer_U = torch.nn.Linear(
         in_features=up_weights.shape[1],
@@ -168,6 +173,20 @@ def slice_gate_dims(
         logger.info("Copying up layer bias")
         new_layer_U.bias.data.copy_(new_bias_u)
 
+    if arch == "llama":
+        new_layer_G = torch.nn.Linear(
+            in_features=gate_weights.shape[1],
+            out_features=gate_weights.shape[0],
+            device="cuda",
+            dtype=torch.float16,
+            bias=True if gate.bias is not None and bias else False,
+            # bias=False,
+        )
+        new_layer_G.weight.data.copy_(gate_weights.to(torch.float16))
+        if bias and new_bias_g is not None:
+            logger.info("Copying gate layer bias")
+            new_layer_G.bias.data.copy_(new_bias_g)
+
     new_layer_D = torch.nn.Linear(
         in_features=down_weights.shape[1],
         out_features=down_weights.shape[0],
@@ -181,21 +200,23 @@ def slice_gate_dims(
         logger.info("Copying down layer bias")
         new_layer_D.bias.data.copy_(down.bias.data)
 
-    if arch == "OPT":
+    if arch == "opt":
         block.fc1 = new_layer_U
         block.fc2 = new_layer_D
-    elif arch == "GPT":
+    elif arch == "gpt":
         block.mlp.c_fc = new_layer_U
         block.mlp.c_proj = new_layer_D
-    elif arch == "LLAMA":
-        block.mlp.gate_proj = new_layer_U
+    elif arch == "llama":
+        block.mlp.up_proj = new_layer_U
+        block.mlp.gate_proj = new_layer_G
         block.mlp.down_proj = new_layer_D
 
 
 def patch_OPT(model):
     """
-    hidden_size needs to become input_features of Q or K weights
+    probably delete this. unused. Use patchers/OPTRebuild.py
 
+    hidden_size needs to become input_features of Q or K weights
     """
     config = model.config
     n_layers = (
@@ -215,19 +236,20 @@ def get_gate_projs(model, layer_idx):
         block = model.model.decoder.layers[layer_idx]  # OPT
         up = block.fc1  # [D_int, D_h]
         down = block.fc2  # [D_h, D_int]
-        return block, up, down, "OPT"
+        return block, up, down, None, "opt"
     except AttributeError:
         try:
             block = model.transformer.h[layer_idx]  # GPT
             up = block.mlp.c_fc
             down = block.mlp.c_proj
 
-            return block, up, down, "GPT"
+            return block, up, down, None, "gpt"
         except AttributeError:
             block = model.model.layers[layer_idx]  # LLaMA
-            up = block.mlp.gate_proj
+            up = block.mlp.up_proj
             down = block.mlp.down_proj
-            return block, up, down, "LLAMA"
+            gate = block.mlp.gate_proj
+            return block, up, down, gate, "llama"
 
 
 def get_decoder(model, layer_idx):

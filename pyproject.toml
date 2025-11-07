@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "datasets>=4.4.1",
+    "numpy>=2.3.4",
+    "torch>=2.9.0",
+    "transformers[torch]>=4.57.1",
+]
 
 [tool.ruff]
 line-length = 100

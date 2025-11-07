@@ -135,8 +135,13 @@ def __calibrate_model(
                 )
             )
         elif arch == "llama":
+            # For llama MLP, i think we can pre-register the hook on down projection,
+            # see line 155 modeling llama. the input to pre_forward hook would map to:
+            # σ_s(X @ W_U ) := X @ Wu * σ_g (X @ Wg)
             handles.append(
-                block.mlp.gate_proj.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
+                block.mlp.down_proj.register_forward_pre_hook(
+                    llama_pre_gate_hook(i, cov_mlp_list, logger)
+                )
             )
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
@@ -163,21 +168,10 @@ def __calibrate_model(
             x_in: Tensor = hidden_states[l].to(torch.float64)  # [B, T, D]
             x_out = hidden_states[l + 1].to(torch.float64)  # [B, T, D]
 
-            # testing showed equivalent to cosine_similary(x_in, x_out)
-            # bi_scores[l] = get_BI_score(x_in, x_out)
             bi_scores[l] += (
                 torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0).mean().item()
             )
             cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device="cpu")
-
-            # for batch_i in range(len(batch)):
-            # can be vectorized but thats not probably not a
-            # batch_x_in = x_in[batch_i, :, :]
-            # batch_x_out = x_out[batch_i, :, :]
-            # bi_scores[l] = (
-            #     1 - torch.cosine_similarity(batch_x_in, batch_x_out, dim=1).mean().item()
-            # )
-            # cov_x_list[l] += (batch_x_in.T @ batch_x_in).to(device="cpu")
 
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
     #####
@@ -198,28 +192,15 @@ def __calibrate_model(
     return cov_mlp_list, cov_q_list, cov_k_list, cov_x_list, bi_scores
 
 
-def get_BI_score(x_in, x_out):
-    Corr = []
-    norm_diff = []
-    x_in = x_in.double().to(device="cuda", dtype=torch.float64)
-    x_out = x_out.double().to(device="cuda", dtype=torch.float64)
+@torch.no_grad()
+def llama_pre_gate_hook(layer_idx, cov_mlp_list, logger=None):
+    def hook(module, input: torch.Tensor):
+        H = input.detach().to(dtype=torch.float64).view(-1, input.size(-1))
+        cov_mlp_list[layer_idx] += (H.T @ H).to(device="cpu")
 
-    normalizer = torch.norm(x_in, p=2, dim=2)
+        return None
 
-    diff = torch.norm((x_in - x_out), p=2, dim=2)
-    diff = (diff / normalizer).mean()
-    norm_diff.append(diff)
-
-    x_in = normalize(x_in, p=2, dim=2)
-    x_out = normalize(x_out, p=2, dim=2)
-
-    corr = torch.diag((x_in @ x_out.mT)[0]).mean()
-    Corr.append(corr)
-
-    Corr = torch.tensor([x for x in Corr]).mean()
-    norm_diff = torch.tensor([x for x in norm_diff]).mean()
-
-    return (1 - Corr).item() * norm_diff.item()
+    return hook
 
 
 @torch.no_grad()

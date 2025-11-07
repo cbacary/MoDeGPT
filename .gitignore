@@ -5,3 +5,5 @@ calibs/
 *.pt
 .venv/
 uv.lock
+
+notes.txt
