@@ -197,42 +197,30 @@ def compress_qk(
             h_start = h * head_dim
             h_end = (h + 1) * head_dim
 
+            Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
+            K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
+            Q_head_bias: Tensor = bias_q[h_start:h_end]
+            K_head_bias: Tensor = bias_k[h_start:h_end]
+
             C_q = cov_q_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
             C_k = cov_k_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
 
             sqrt_C_q = sqrt_M(C_q)
             sqrt_C_k = sqrt_M(C_k)
 
-            # symmetric matrix, dim doesnt matter
-            norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
-            norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
-            scores = norms_q * norms_k
-
-            # NOTE TO ME LATER::: Consider dims input into topk (does it work with vector norm above)
-            topk = torch.topk(scores, k=rank_i, largest=True).indices
-
-            Sk = torch.eye(sqrt_C_k.shape[0], device="cuda", dtype=torch.float64)[:, topk]
-
-            topk_selector = torch.tensor([1 if j in topk else 0 for j in range(head_dim)]).to(
-                dtype=torch.bool, device="cuda"
-            )
-
-            Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
-            K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
-
-            Q_new = Q_head.T @ Sk  # dont trust this, gotta rethink about that
-            K_new = K_head.T @ Sk
-            new_Q_heads.append(Q_new.T)
-            new_K_heads.append(K_new.T)
-
-            if bias:
-                bias_q_new = bias_q[h_start:h_end][topk_selector]
-                bias_k_new = bias_k[h_start:h_end][topk_selector]
-                bias_Q_heads.append(bias_q_new)
-                bias_K_heads.append(bias_k_new)
+            if arch == "llama":
+                new_Q_head, new_K_head = compress_head_llama(
+                    sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i
+                )
+            elif arch == "opt":
+                new_Q_head, new_K_head, qb_h, kb_h = compress_head_opt(
+                    sqrt_C_q, sqrt_C_k, Q_head, K_head, Q_head_bias, K_head_bias, rank_i
+                )
+                bias_Q_heads.append(qb_h)
+                bias_K_heads.append(qb_h)
             else:
-                bias_Q_heads = []
-                bias_K_heads = []
+                raise Exception
+
         ####
 
         slice_QK_dims(
