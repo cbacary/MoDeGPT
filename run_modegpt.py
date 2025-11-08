@@ -11,7 +11,7 @@ from compress_svd import compress_vo
 from compression_utils import allocate_global_sparsity
 from eval import compute_perplexity, load_calibration_texts, load_eval_texts
 from model_utils import load_model, reload_compressed_model, save_compressed_model, save_model
-from patchers.opt_patch import patch_config
+from patchers.patch import patch_config
 
 logger = logging.getLogger("MoDeGPT")
 logger.setLevel(logging.INFO)

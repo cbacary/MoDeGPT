@@ -117,7 +117,7 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids, rotary_mask: torch.Tensor, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
     Args:
@@ -139,20 +139,31 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
+
+    if rotary_mask is not None:
+        rotary_mask.expand(-1, -1, cos.shape[2], -1)
+        cos = torch.gather(cos, 3, rotary_mask.to(cos.device))
+        sin = torch.gather(sin, 3, rotary_mask.to(cos.device))
+    else:
+        raise Exception
+
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
 class LlamaMLP(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, layer_idx: int):
         super().__init__()
         self.config = config
+
+        compressed_int_size = config.gate_ranks[layer_idx]
+
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.mlp_bias)
+        self.gate_proj = nn.Linear(self.hidden_size, compressed_int_size, bias=config.mlp_bias)
+        self.up_proj = nn.Linear(self.hidden_size, compressed_int_size, bias=config.mlp_bias)
+        self.down_proj = nn.Linear(compressed_int_size, self.hidden_size, bias=config.mlp_bias)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -207,31 +218,50 @@ class LlamaAttention(nn.Module):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        self.head_dim = getattr(
-            config, "head_dim", config.hidden_size // config.num_attention_heads
-        )
+
+        self.compressed_qk_dims = config.qk_ranks[layer_idx]
+        self.compressed_vo_dims = config.vo_ranks[layer_idx]
+
+        # self.head_dim = getattr(
+        #     config, "head_dim", config.hidden_size // config.num_attention_heads
+        # )
+
+        # self.head_dim = self.compressed_qk_dims // config.num_attention_heads
+
+        """
+        PROBLEM for 70B models: 
+            these models use Grouped Query Attention (multiple Query heads per K/V head)
+            for models that use GQA we will probably have to account for that in some way 
+            during the compression of the attention heads (or maybe not, have to think about it)
+        7B models: 
+            not currently a problem since num_key_value_groups = 1 (standard MQA/MHA)
+        
+        CURRENTLY:
+            Only tested against 7B models -- does not handle GQA
+        """
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
         self.q_proj = nn.Linear(
             config.hidden_size,
-            config.num_attention_heads * self.head_dim,
+            self.compressed_qk_dims,
             bias=config.attention_bias,
         )
         self.k_proj = nn.Linear(
             config.hidden_size,
-            config.num_key_value_heads * self.head_dim,
+            self.compressed_qk_dims,
             bias=config.attention_bias,
         )
         self.v_proj = nn.Linear(
             config.hidden_size,
-            config.num_key_value_heads * self.head_dim,
+            self.compressed_vo_dims,
             bias=config.attention_bias,
         )
         self.o_proj = nn.Linear(
-            config.num_attention_heads * self.head_dim,
+            self.compressed_vo_dims,
             config.hidden_size,
             bias=config.attention_bias,
         )
@@ -247,14 +277,23 @@ class LlamaAttention(nn.Module):
         **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # technically they are always the same, but for consistency sake i calculate both
+        hidden_shape_qk = (*input_shape, -1, self.compressed_qk_dims)
+        hidden_shape_vo = (*input_shape, -1, self.compressed_vo_dims)
+
+        query_states = self.q_proj(hidden_states).view(hidden_shape_qk).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(hidden_shape_qk).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape_vo).transpose(1, 2)
 
         cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        """
+        `self.layer_rotary_mask` is initialized in compress_qk as a register_buffer on self_attn
+        """
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin, rotary_mask=self.layer_rotary_mask
+        )
 
         if past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
@@ -290,7 +329,7 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
 
         self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
 
-        self.mlp = LlamaMLP(config)
+        self.mlp = LlamaMLP(config, layer_idx)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 

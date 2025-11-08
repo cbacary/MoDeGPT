@@ -4,7 +4,6 @@ import types
 import torch
 from torch.types import Tensor
 
-from patchers.opt_patch import patched_forward
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -210,25 +209,6 @@ def slice_gate_dims(
         block.mlp.up_proj = new_layer_U
         block.mlp.gate_proj = new_layer_G
         block.mlp.down_proj = new_layer_D
-
-
-def patch_OPT(model):
-    """
-    probably delete this. unused. Use patchers/OPTRebuild.py
-
-    hidden_size needs to become input_features of Q or K weights
-    """
-    config = model.config
-    n_layers = (
-        getattr(config, "n_layer", None)
-        or getattr(config, "num_hidden_layers", None)
-        or getattr(config, "num_layers", None)
-    )
-    for layer in range(n_layers):
-        block = get_layer_block(model, layer)
-        self_attn = block.self_attn
-
-        self_attn.forward = types.MethodType(patched_forward, self_attn)
 
 
 def get_gate_projs(model, layer_idx):

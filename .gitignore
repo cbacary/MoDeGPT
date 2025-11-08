@@ -6,4 +6,4 @@ calibs/
 .venv/
 uv.lock
 
-notes.txt
+notes.md

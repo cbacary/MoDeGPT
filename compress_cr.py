@@ -8,6 +8,7 @@ from torch.types import Tensor
 
 from compression_utils import slice_QK_dims, sqrt_M
 from model_utils import get_model_attrs
+from patchers.LlamaRebuild import LlamaForCausalLM
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -159,7 +160,7 @@ def compress_qk_svd(
 #### NOTE: see OPTDecoderLayer.final_layer_norm
 @torch.no_grad()
 def compress_qk(
-    model,
+    model: LlamaForCausalLM,
     cov,
     keep_ratios,
     rank=None,
@@ -193,6 +194,7 @@ def compress_qk(
         new_K_heads = []
         bias_Q_heads = []
         bias_K_heads = []
+        layer_rotary_mask = []
         for h in range(n_heads):
             h_start = h * head_dim
             h_end = (h + 1) * head_dim
@@ -209,19 +211,35 @@ def compress_qk(
             sqrt_C_k = sqrt_M(C_k)
 
             if arch == "llama":
-                new_Q_head, new_K_head = compress_head_llama(
-                    sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i
+                new_Q_head, new_K_head, rotary_mask_head = compress_head_llama(
+                    model, sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i
                 )
+                layer_rotary_mask += rotary_mask_head
             elif arch == "opt":
                 new_Q_head, new_K_head, qb_h, kb_h = compress_head_opt(
                     sqrt_C_q, sqrt_C_k, Q_head, K_head, Q_head_bias, K_head_bias, rank_i
                 )
                 bias_Q_heads.append(qb_h)
-                bias_K_heads.append(qb_h)
+                bias_K_heads.append(kb_h)
             else:
                 raise Exception
 
+            new_Q_heads.append(new_Q_head)
+            new_K_heads.append(new_K_head)
         ####
+
+        if arch == "llama":
+
+            # layer_rotary_mask     [n_heads * new_head_dims]
+            # .reshape(n_heads, -1) [n_heads, new_head_dims]
+            # .unsqueeze(0)         [1, n_heads, new_head_dims]
+            # .unsqueeze(2)         [1, n_heads, 1, new_head_dims]
+            # this is then shapes it into the applicable shape for apply_rotary_pos_emb
+            # (see comment about unsqueezing there): [batch_size, heads, seq_len, head_dim]
+            layer_rotary_mask = torch.Tensor(layer_rotary_mask, device="cpu", dtype=torch.int64)
+            layer_rotary_mask = layer_rotary_mask.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
+
+            model.model.layers[i].self_attn.register_buffer("layer_rotary_mask", layer_rotary_mask)
 
         slice_QK_dims(
             model=model,
@@ -244,7 +262,11 @@ def compress_qk(
 
 
 def compress_head_llama(
-    sqrt_C_q: Tensor, sqrt_C_k: Tensor, Q_head: Tensor, K_head: Tensor, rank: int
+    sqrt_C_q: Tensor,
+    sqrt_C_k: Tensor,
+    Q_head: Tensor,
+    K_head: Tensor,
+    rank: int,
 ):
 
     # llama requires head dim divisible by two
@@ -263,7 +285,7 @@ def compress_head_llama(
     new_Q_head = Q_head[Sk].to(Q_head).to(device="cpu")
     new_K_head = K_head[Sk].to(K_head).to(device="cpu")
 
-    return new_Q_head, new_K_head
+    return new_Q_head, new_K_head, Sk
 
 
 def compress_head_opt(
