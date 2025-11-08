@@ -22,11 +22,11 @@ def patch_config(model: torch.nn.Module):
     for layer in range(n_layers):
         query_weight, _ = get_Q_K_weights(model, layer)
         value_weight, _ = get_V_O_weights(model, layer)
-        _, up_weight, _, _, _ = get_gate_projs(model, layer)
+        _, up_proj, _, _, _ = get_gate_projs(model, layer)
 
         q_rank = query_weight.shape[0]  # q/k
         v_rank = value_weight.shape[0]  # v/o
-        gate_rank = up_weight.shape[0]  # u/d
+        gate_rank = up_proj.weight.shape[0]  # u/d
 
         qk_ranks.append(q_rank)
         vo_ranks.append(v_rank)

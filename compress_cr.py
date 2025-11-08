@@ -7,7 +7,7 @@ import torch
 from torch.types import Tensor
 
 from compression_utils import slice_QK_dims, sqrt_M
-from model_utils import get_model_attrs
+from model_utils import get_model_attrs, dtype_p
 from patchers.LlamaRebuild import LlamaForCausalLM
 
 logger = logging.getLogger("MoDeGPT")
@@ -24,7 +24,7 @@ def compress_qk_svd(
     slice_dims=True,
 ):
     """
-    QK compression using SVD instead of CR decomposition
+    QK compression using SVD instead of CR decomposition -- better performance for OPT models
     """
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
 
@@ -34,7 +34,7 @@ def compress_qk_svd(
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
         rank_i = max(1, min(rank_i, head_dim))
 
-        C = cov_x[layer].to(device="cuda", dtype=torch.float64)
+        C = cov_x[layer].to(device="cuda", dtype=dtype_p)
         sqrt_C = sqrt_M(C)
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
@@ -199,22 +199,23 @@ def compress_qk(
             h_start = h * head_dim
             h_end = (h + 1) * head_dim
 
-            Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
-            K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=torch.float64)
-            Q_head_bias: Tensor = bias_q[h_start:h_end]
-            K_head_bias: Tensor = bias_k[h_start:h_end]
+            Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=dtype_p)
+            K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=dtype_p)
+            if arch == "opt":
+                Q_head_bias: Tensor = bias_q[h_start:h_end]
+                K_head_bias: Tensor = bias_k[h_start:h_end]
 
-            C_q = cov_q_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
-            C_k = cov_k_list[i][h].to(dtype=torch.float64, device="cuda")  # [Hd, Hd]
+            C_q = cov_q_list[i][h].to(dtype=dtype_p, device="cuda")  # [Hd, Hd]
+            C_k = cov_k_list[i][h].to(dtype=dtype_p, device="cuda")  # [Hd, Hd]
 
             sqrt_C_q = sqrt_M(C_q)
             sqrt_C_k = sqrt_M(C_k)
 
             if arch == "llama":
                 new_Q_head, new_K_head, rotary_mask_head = compress_head_llama(
-                    model, sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i
+                    sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i
                 )
-                layer_rotary_mask += rotary_mask_head
+                layer_rotary_mask.append(rotary_mask_head)
             elif arch == "opt":
                 new_Q_head, new_K_head, qb_h, kb_h = compress_head_opt(
                     sqrt_C_q, sqrt_C_k, Q_head, K_head, Q_head_bias, K_head_bias, rank_i
@@ -236,10 +237,15 @@ def compress_qk(
             # .unsqueeze(2)         [1, n_heads, 1, new_head_dims]
             # this is then shapes it into the applicable shape for apply_rotary_pos_emb
             # (see comment about unsqueezing there): [batch_size, heads, seq_len, head_dim]
-            layer_rotary_mask = torch.Tensor(layer_rotary_mask, device="cpu", dtype=torch.int64)
-            layer_rotary_mask = layer_rotary_mask.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
+            final = torch.tensor([], device="cpu")
+            for mask_head in layer_rotary_mask:
+                final = torch.cat((final, mask_head.to(device="cpu")), dim=0)
+            final = final.to(dtype=torch.int64)
+            final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
 
-            model.model.layers[i].self_attn.register_buffer("layer_rotary_mask", layer_rotary_mask)
+            model.model.layers[i].self_attn.register_buffer(
+                "layer_rotary_mask", final.to(device="cuda")
+            )
 
         slice_QK_dims(
             model=model,
@@ -271,11 +277,12 @@ def compress_head_llama(
 
     # llama requires head dim divisible by two
     rank = rank - (rank % 2)
+    head_dims = sqrt_C_k.shape[-1]
 
-    normed_q_r1 = torch.norm(sqrt_C_q[..., : rank // 2], dim=0)  # norm for query rotary half 1
-    normed_q_r2 = torch.norm(sqrt_C_q[..., rank // 2 :], dim=0)
-    normed_k_r1 = torch.norm(sqrt_C_k[..., : rank // 2], dim=0)
-    normed_k_r2 = torch.norm(sqrt_C_k[..., rank // 2 :], dim=0)  # norm for key rotary half 2
+    normed_q_r1 = torch.norm(sqrt_C_q[..., : head_dims // 2], dim=0)  # norm for query rotary half 1
+    normed_q_r2 = torch.norm(sqrt_C_q[..., head_dims // 2 :], dim=0)
+    normed_k_r1 = torch.norm(sqrt_C_k[..., : head_dims // 2], dim=0)
+    normed_k_r2 = torch.norm(sqrt_C_k[..., head_dims // 2 :], dim=0)  # norm for key rotary half 2
 
     final_norm = normed_q_r1**2 * normed_k_r1**2 + normed_q_r2**2 * normed_k_r2**2
 

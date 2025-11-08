@@ -6,8 +6,9 @@ import torch
 from torch.nn.functional import normalize
 from torch.types import Tensor
 
+from typing import Tuple
 
-from model_utils import get_model_attrs
+from model_utils import get_model_attrs, dtype_p
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -83,6 +84,7 @@ def __calibrate_model(
             n_inner = transformer_block.fc1.out_features
         elif arch == "llama":
             n_inner = transformer_block.mlp.gate_proj.out_features
+            logger.info(f"n_inner = {n_inner}")
 
         return n_inner
 
@@ -91,20 +93,21 @@ def __calibrate_model(
         torch.zeros(
             get_inner(transformer_blocks[i]),
             get_inner(transformer_blocks[i]),
-            dtype=torch.float64,
+            dtype=dtype_p,
+            device="cpu",
         )
         for i in range(n_layers)
     ]
     cov_q_list = [
-        [torch.zeros(head_dim, head_dim, dtype=torch.float64) for _ in range(n_heads)]
+        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device="cpu") for _ in range(n_heads)]
         for _ in range(n_layers)
     ]
     cov_k_list = [
-        [torch.zeros(head_dim, head_dim, dtype=torch.float64) for _ in range(n_heads)]
+        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device="cpu") for _ in range(n_heads)]
         for _ in range(n_layers)
     ]
     # correlation input for type 3 compression, with d_h x d_h shape (hidden dimension x hidden dimension)
-    cov_x_list = [torch.zeros(d_model, d_model, dtype=torch.float64) for _ in range(n_layers)]
+    cov_x_list = [torch.zeros(d_model, d_model, dtype=dtype_p) for _ in range(n_layers)]
 
     bi_scores = [0.0 for _ in range(n_layers)]
 
@@ -145,12 +148,26 @@ def __calibrate_model(
             )
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
-                    _make_proj_hook(i, cov_q_list, n_heads, head_dim, logger)
+                    _make_proj_hook(
+                        layer_idx=i,
+                        cov_list=cov_q_list,
+                        n_heads=n_heads,
+                        head_dim=head_dim,
+                        d_model=d_model,
+                        logger=logger,
+                    )
                 )
             )
             handles.append(
                 block.self_attn.k_proj.register_forward_hook(
-                    _make_proj_hook(i, cov_k_list, n_heads, head_dim, logger)
+                    _make_proj_hook(
+                        layer_idx=i,
+                        cov_list=cov_k_list,
+                        n_heads=n_heads,
+                        head_dim=head_dim,
+                        d_model=d_model,
+                        logger=logger,
+                    )
                 )
             )
 
@@ -165,8 +182,8 @@ def __calibrate_model(
         outputs = model(**inputs, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         for l in range(n_layers):
-            x_in: Tensor = hidden_states[l].to(torch.float64)  # [B, T, D]
-            x_out = hidden_states[l + 1].to(torch.float64)  # [B, T, D]
+            x_in: Tensor = hidden_states[l].to(dtype_p)  # [B, T, D]
+            x_out = hidden_states[l + 1].to(dtype_p)  # [B, T, D]
 
             bi_scores[l] += (
                 torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0).mean().item()
@@ -194,8 +211,9 @@ def __calibrate_model(
 
 @torch.no_grad()
 def llama_pre_gate_hook(layer_idx, cov_mlp_list, logger=None):
-    def hook(module, input: torch.Tensor):
-        H = input.detach().to(dtype=torch.float64).view(-1, input.size(-1))
+    def hook(module, input: Tuple[torch.Tensor]):
+        x_input = input[0]
+        H = x_input.to(device="cpu").detach().to(dtype=dtype_p).view(-1, x_input.size(-1))
         cov_mlp_list[layer_idx] += (H.T @ H).to(device="cpu")
 
         return None
@@ -209,8 +227,8 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
         # out [B*T, D_int]
         # reallly we should grab the activation function directly
         # from the model its something like model.decoder....act_fn()
-        act = torch.nn.functional.relu(out.to(dtype=torch.float64))
-        H = act.detach().to(dtype=torch.float64).view(-1, act.size(-1))
+        act = torch.nn.functional.relu(out.to(dtype=dtype_p, device="cpu"))
+        H = act.detach().to(dtype=dtype_p).view(-1, act.size(-1))
         cov_mlp_list[layer_idx] += (H.T @ H).to(device="cpu")
 
     return hook
@@ -220,7 +238,7 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
 def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger=None):
     def hook(module, inp, out):
         try:
-            out = out.detach().to(dtype=torch.float64, device="cpu")
+            out = out.detach().to(dtype=dtype_p, device="cpu")
             q_block, k_block, _ = out.split(d_model, dim=2)
             Q = q_block.view(-1, d_model)
             K = k_block.view(-1, d_model)
@@ -238,17 +256,10 @@ def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_di
 
 @torch.no_grad()
 def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):
-    """
-    For this to work on LLama Models we would have to use a nonlinear function on
-        X @ W to create positional embeddings (RoPE for llama).
-
-    in paper (sigma_r denotes positional embeddings -- not relevant for OPT)
-    """
-
     def hook(module: torch.nn.Linear, inp, out):
         # try:
         # this can also be easily vectorized (no need to calculate C_proj over entire proj)
-        proj_out = out.detach().to(dtype=torch.float64, device="cpu")  # [B,T, d_model]
+        proj_out = out.detach().to(dtype=dtype_p, device="cpu")  # [B,T, d_model]
         proj = proj_out.view(-1, d_model)  # [B*T, d_model]
         C_proj = proj.T @ proj
         C_proj = C_proj.to(device="cpu")

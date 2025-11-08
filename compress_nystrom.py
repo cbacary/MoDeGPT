@@ -4,7 +4,7 @@ import logging
 import torch
 
 from compression_utils import slice_gate_dims
-from model_utils import get_model_attrs
+from model_utils import get_model_attrs, dtype_p
 
 # from transformers.models.llama.modeling_llama
 
@@ -48,10 +48,10 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
             bias_g = proj_gate.bias
             bias_d = proj_d.bias
 
-            W_g = W_g.to(dtype=torch.float64, device="cuda")
+            W_g = W_g.to(dtype=dtype_p, device="cuda")
 
         keep_ratio = keep_ratios[i]
-        C = cov[i].to(dtype=torch.float64, device="cuda")  # [D_int, D_int]
+        C = cov[i].to(dtype=dtype_p, device="cuda")  # [D_int, D_int]
         D_int = C.shape[0]
         rank_i = int(D_int * keep_ratio)
         rank_i = max(1, min(rank_i, D_int))
@@ -66,22 +66,23 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
             dtype=torch.bool, device="cuda"
         )
 
-        Sk = torch.eye(D_int, device=C.device, dtype=torch.float64)[
-            :, topk_selector
-        ]  # [D_int, rank_i]
+        Sk = torch.eye(D_int, device=C.device, dtype=dtype_p)[:, topk_selector]  # [D_int, rank_i]
 
-        W_u = W_u.to(dtype=torch.float64, device="cuda")  # [D_int, D_h]
-        W_d = W_d.to(dtype=torch.float64, device="cuda")  # [D_h, D_int]
+        W_u = W_u.to(dtype=dtype_p, device="cuda")  # [D_int, D_h]
+        W_d = W_d.to(dtype=dtype_p, device="cuda")  # [D_h, D_int]
+
+        new_bias_u, new_bias_g, new_bias_d = None, None, None
 
         # W_u.T @ Sk =
         # = [D_h, D_int] @ [D_int, rank_i]
         # = [D_h, rank_i]
         W_u_proj = W_u.T @ Sk
+        if bias_u is not None:
+            new_bias_u = bias_u[topk_selector]
+
         if arch == "llama":
             W_g_proj = W_g.T @ Sk
-            new_bias_g = bias_g[topk_selector]
-
-        new_bias_u = bias_u[topk_selector]
+            new_bias_g = None if bias_g is None else bias_g[topk_selector]
 
         # Sk.T @ (C @ Sk) =
         # = [rank_i, D_int] @ ( [D_int, D_int] @ [D_int, rank_i] )
@@ -108,7 +109,7 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
                 up_weights=W_u_proj.T,
                 down_weights=W_d_proj.T,
                 gate_weights=None if arch != "llama" else W_g_proj,
-                new_bias_g=None if arch != "llama" else new_bias_g,
+                new_bias_g=new_bias_g,
                 new_bias_u=new_bias_u,
                 bias=True,
             )

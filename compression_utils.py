@@ -7,11 +7,13 @@ from torch.types import Tensor
 
 logger = logging.getLogger("MoDeGPT")
 
+from model_utils import dtype_p
+
 
 @torch.no_grad
 def sqrt_M(M: Tensor, ridge_lambda=1e-4) -> Tensor:
     """
-    Warning: Be weary of input being of precision torch.float64, may be because ridge lambda was too low,
+    Warning: Be weary of input being of precision dtype_p, may be because ridge lambda was too low,
     but this broke the result in some cases.
     The following is the code I originally used for sqrt_M. Its MUCH slower.
     However, note the following marginal ppl differerence against opt-1.3b WikiText2:
@@ -301,7 +303,7 @@ def allocate_global_sparsity(
     phi_avg = compression_ratio
     epsilon = smoothing
 
-    s = torch.tensor(bi_scores).to(torch.float64)
+    s = torch.tensor(bi_scores).to(dtype_p)
     phi = L * phi_avg * softmax(-s / epsilon, dim=0)
     # phi[0] = 0.0
     for count, (bi_score, sparsity) in enumerate(zip(bi_scores, phi)):

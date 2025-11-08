@@ -6,6 +6,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger("MoDeGPT")
 
+# precision to use for nearly all operations
+dtype_p = torch.float64
+
 
 def load_model(model_name: str, device: int = 0):
     """
@@ -89,6 +92,9 @@ def reload_compressed_model(model_dir: str, device: int = 0):
         tokenizer_source = f.read().strip()
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
         model_dir, torch_dtype=torch.float16, low_cpu_mem_usage=True, trust_remote_code=True

@@ -117,7 +117,15 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids, rotary_mask: torch.Tensor, unsqueeze_dim=1):
+def apply_rotary_pos_emb(
+    q,
+    k,
+    cos,
+    sin,
+    rotary_mask: torch.Tensor,
+    unsqueeze_dim=1,
+    position_ids=None,
+):
     """Applies Rotary Position Embedding to the query and key tensors.
 
     Args:
@@ -137,8 +145,8 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, rotary_mask: torch.Tensor
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
+    cos = cos.unsqueeze(unsqueeze_dim).expand(1, rotary_mask.shape[1], -1, -1)
+    sin = sin.unsqueeze(unsqueeze_dim).expand(1, rotary_mask.shape[1], -1, -1)
 
     if rotary_mask is not None:
         rotary_mask.expand(-1, -1, cos.shape[2], -1)
@@ -226,7 +234,7 @@ class LlamaAttention(nn.Module):
         #     config, "head_dim", config.hidden_size // config.num_attention_heads
         # )
 
-        # self.head_dim = self.compressed_qk_dims // config.num_attention_heads
+        self.head_dims = self.compressed_qk_dims // config.num_attention_heads
 
         """
         PROBLEM for 70B models: 
@@ -240,8 +248,9 @@ class LlamaAttention(nn.Module):
             Only tested against 7B models -- does not handle GQA
         """
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
+        self.num_attention_heads = config.num_attention_heads
 
-        self.scaling = self.head_dim**-0.5
+        self.scaling = self.compressed_qk_dims**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
@@ -266,6 +275,13 @@ class LlamaAttention(nn.Module):
             bias=config.attention_bias,
         )
 
+        self.register_buffer(
+            "layer_rotary_mask",
+            torch.empty((1, config.num_attention_heads, 1, self.head_dims)).to(
+                dtype=torch.int64, device="cuda"
+            ),
+        )
+
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
@@ -279,12 +295,17 @@ class LlamaAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
 
         # technically they are always the same, but for consistency sake i calculate both
-        hidden_shape_qk = (*input_shape, -1, self.compressed_qk_dims)
-        hidden_shape_vo = (*input_shape, -1, self.compressed_vo_dims)
 
-        query_states = self.q_proj(hidden_states).view(hidden_shape_qk).transpose(1, 2)
-        key_states = self.k_proj(hidden_states).view(hidden_shape_qk).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape_vo).transpose(1, 2)
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        compressed_qk_head_dim = query_states.shape[-1] // self.num_attention_heads
+        compressed_vo_head_dim = value_states.shape[-1] // self.num_attention_heads
+
+        query_states = query_states.view((*input_shape, -1, compressed_qk_head_dim)).transpose(1, 2)
+        key_states = key_states.view((*input_shape, -1, compressed_qk_head_dim)).transpose(1, 2)
+        value_states = value_states.view((*input_shape, -1, compressed_vo_head_dim)).transpose(1, 2)
 
         cos, sin = position_embeddings
 

@@ -54,9 +54,9 @@ def main():
         args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
     )
 
-    logger.info("Evaluating original model (for baseline perplexity)...")
-    baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
-    logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
+    # logger.info("Evaluating original model (for baseline perplexity)...")
+    # baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
+    # logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
 
     cov_mlp, cov_q, cov_k, cov_x, bi_scores = load_calibs(
         model,
@@ -71,7 +71,7 @@ def main():
         bi_scores, compression_ratio=args.compression_ratio
     )
 
-    model, tokenizer, config = load_model(args.model, device=device)
+    # model, tokenizer, config = load_model(args.model, device=device)
 
     slice_dims = True
     ridge_lambda = 1e-2
@@ -147,10 +147,18 @@ def main():
         )
 
     patch_config(model)
+
+    if arch == "opt":
+        rebuild_path = "./patchers/OPTRebuild.py"
+    elif arch == "llama":
+        rebuild_path = "./patchers/LlamaRebuild.py"
+    else:
+        raise Exception("Cannot save compressed model ... no compressed model definition")
+
     save_compressed_model(
         model,
         tokenizer,
-        rebuild_path="./patchers/OPTRebuild.py",
+        rebuild_path=rebuild_path,
         save_dir=args.output_dir,
         source_model_name=args.model,
     )
