@@ -6,11 +6,13 @@ from calibration import get_model_attrs
 
 # from transformers.models.opt.modeling_opt import OPTDecoderLayer
 from compression_utils import get_Q_K_weights, get_V_O_weights, get_gate_projs
+import copy
 
 logger = logging.getLogger("MoDeGPT")
 
 
 def patch_config(model: torch.nn.Module):
+    og_config = copy.deepcopy(model.config)
     config = model.config
 
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
@@ -41,3 +43,5 @@ def patch_config(model: torch.nn.Module):
         config.auto_map = {"AutoModelForCausalLM": "OPTRebuild.OPTForCausalLM"}
     if arch == "llama":
         config.auto_map = {"AutoModelForCausalLM": "LlamaRebuild.LlamaForCausalLM"}
+
+    return og_config

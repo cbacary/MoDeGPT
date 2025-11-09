@@ -16,6 +16,9 @@ np.random.seed(1234)
 random.seed(1234)
 
 
+print("over here too")
+
+
 def load_calibs(
     model,
     tokenizer,
@@ -24,6 +27,7 @@ def load_calibs(
     load_calibs_from="",
     calibs_save_path="",
 ):
+    print("i wonder if i'll see this")
     if not load_calibs_from:
         logger.info("Calibrating model...")
         cov_mlp, cov_q, cov_k, cov_x, bi_scores = __calibrate_model(

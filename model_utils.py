@@ -64,14 +64,22 @@ def save_model(model: torch.nn.Module, tokenizer, save_dir: str, source_model_na
 
 
 def save_compressed_model(
-    model: torch.nn.Module, tokenizer, rebuild_path: str, save_dir: str, source_model_name: str
+    model: torch.nn.Module,
+    tokenizer,
+    rotary_masks: list[torch.Tensor],
+    rebuild_path: str,
+    save_dir: str,
+    source_model_name: str,
 ):
     import shutil
 
     os.makedirs(save_dir, exist_ok=True)
 
+    mask_path = os.path.abspath(os.path.join(save_dir, "rotary_masks.pt"))
+    model.config.mask_path = mask_path
     model.save_pretrained(save_dir, torch_dtype=torch.float16)
     tokenizer.save_pretrained(save_dir)
+    torch.save(rotary_masks, mask_path)
 
     shutil.copy(rebuild_path, save_dir)
 

@@ -108,7 +108,7 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
                 layer_idx=i,
                 up_weights=W_u_proj.T,
                 down_weights=W_d_proj.T,
-                gate_weights=None if arch != "llama" else W_g_proj,
+                gate_weights=None if arch != "llama" else W_g_proj.T,
                 new_bias_g=new_bias_g,
                 new_bias_u=new_bias_u,
                 bias=True,

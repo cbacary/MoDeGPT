@@ -171,6 +171,7 @@ def compress_qk(
 
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
 
+    rotary_masks = []
     for i in range(n_layers):
         # try:
         keep_ratio = keep_ratios[i]
@@ -231,21 +232,19 @@ def compress_qk(
 
         if arch == "llama":
 
-            # layer_rotary_mask     [n_heads * new_head_dims]
+            # layer_rotary_mask     [n_heads * new_head_dims] (unfolded)
             # .reshape(n_heads, -1) [n_heads, new_head_dims]
             # .unsqueeze(0)         [1, n_heads, new_head_dims]
             # .unsqueeze(2)         [1, n_heads, 1, new_head_dims]
             # this is then shapes it into the applicable shape for apply_rotary_pos_emb
             # (see comment about unsqueezing there): [batch_size, heads, seq_len, head_dim]
-            final = torch.tensor([], device="cpu")
+            final = torch.tensor([], dtype=torch.int64, device="cuda")
             for mask_head in layer_rotary_mask:
-                final = torch.cat((final, mask_head.to(device="cpu")), dim=0)
-            final = final.to(dtype=torch.int64)
+                final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
             final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
+            rotary_masks.append(final)
 
-            model.model.layers[i].self_attn.register_buffer(
-                "layer_rotary_mask", final.to(device="cuda")
-            )
+            # final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
 
         slice_QK_dims(
             model=model,
@@ -261,6 +260,8 @@ def compress_qk(
             logger.info(
                 f"[QK] ✅ Layer {i}: compressed to rank {rank_i} per head (CR-score + interpolation)"
             )
+
+    return rotary_masks
     # except Exception as e:
     #     if logger:
     #         logger.error("Error: %s", e, exc_info=True)

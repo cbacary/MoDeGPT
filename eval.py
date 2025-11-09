@@ -100,6 +100,7 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
     if max_length is None or max_length > 4096:
         max_length = 2048
 
+    print(len(texts))
     for count, batch in enumerate(texts):
         inputs = tokenizer(
             batch, return_tensors="pt", padding=True, truncation=True, max_length=2048

@@ -5,9 +5,9 @@ import os
 import torch
 
 from calibration import get_model_attrs, load_calibs
-from compress_cr import compress_qk, compress_qk_svd
-from compress_nystrom import compress_mlp
-from compress_svd import compress_vo
+from compress_qk import compress_qk, compress_qk_svd
+from compress_mlp import compress_mlp
+from compress_vo import compress_vo
 from compression_utils import allocate_global_sparsity
 from eval import compute_perplexity, load_calibration_texts, load_eval_texts
 from model_utils import load_model, reload_compressed_model, save_compressed_model, save_model
@@ -54,9 +54,9 @@ def main():
         args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
     )
 
-    # logger.info("Evaluating original model (for baseline perplexity)...")
-    # baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
-    # logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
+    logger.info("Evaluating original model (for baseline perplexity)...")
+    baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
+    logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
 
     cov_mlp, cov_q, cov_k, cov_x, bi_scores = load_calibs(
         model,
@@ -97,13 +97,6 @@ def main():
             slice_dims=True,
         )
 
-        save_model(
-            model,
-            tokenizer,
-            save_dir=f"{args.output_dir}--mlp",
-            source_model_name=args.model,
-        )
-
     slice_vo_qk = True
     if "qk" not in skip:
         if arch == "opt":
@@ -115,20 +108,13 @@ def main():
                 slice_dims=True,
             )
         else:
-            compress_qk(
+            rotary_masks = compress_qk(
                 model=model,
                 cov=(cov_q, cov_k),
                 keep_ratios=layer_keep_ratios,
                 ridge_lambda=ridge_lambda,
                 slice_dims=slice_vo_qk,
             )
-
-        save_model(
-            model,
-            tokenizer,
-            save_dir=f"{args.output_dir}--qk",
-            source_model_name=args.model,
-        )
 
     if "vo" not in skip:
         compress_vo(
@@ -137,13 +123,6 @@ def main():
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
             slice_dims=slice_vo_qk,
-        )
-
-        save_model(
-            model,
-            tokenizer,
-            save_dir=f"{args.output_dir}--vo",
-            source_model_name=args.model,
         )
 
     patch_config(model)
@@ -158,6 +137,7 @@ def main():
     save_compressed_model(
         model,
         tokenizer,
+        rotary_masks=rotary_masks,
         rebuild_path=rebuild_path,
         save_dir=args.output_dir,
         source_model_name=args.model,

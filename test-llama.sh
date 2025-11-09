@@ -1,1 +1,1 @@
-python run_modegpt.py --model meta-llama/Llama-2-7b-hf --device 0 --compression_ratio 0.4 --calib_size 16 --eval_size 4 --calibs_batch_size 4 --output_dir ./compressed_output/llama2-7b --calibs_save_path ./calibs/llama2-7b_sz16.pt
+python run_modegpt.py --model meta-llama/Llama-2-7b-hf --device 0 --compression_ratio 0.4 --calib_size 16 --eval_size 8 --calibs_batch_size 8 --output_dir ./compressed_output/llama2-7b --load_calibs_from ./calibs/llama2-7b_sz16.pt

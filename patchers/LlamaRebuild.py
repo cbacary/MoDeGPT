@@ -45,7 +45,6 @@ from transformers.utils.deprecation import deprecate_kwarg
 from transformers.utils.generic import check_model_inputs
 from transformers.models.llama.configuration_llama import LlamaConfig
 
-
 logger = logging.get_logger(__name__)
 
 
@@ -118,15 +117,18 @@ def rotate_half(x):
 
 
 def apply_rotary_pos_emb(
-    q,
-    k,
+    q: torch.Tensor,
+    k: torch.Tensor,
     cos,
     sin,
-    rotary_mask: torch.Tensor,
+    rotary_mask: torch.Tensor | None,
     unsqueeze_dim=1,
     position_ids=None,
 ):
     """Applies Rotary Position Embedding to the query and key tensors.
+
+    rotary_mask of shape [1, n_heads, 1, layer_head_dims]
+     - layer_head_dims varies by layer
 
     Args:
         q (`torch.Tensor`): The query tensor.
@@ -145,18 +147,44 @@ def apply_rotary_pos_emb(
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    cos = cos.unsqueeze(unsqueeze_dim).expand(1, rotary_mask.shape[1], -1, -1)
-    sin = sin.unsqueeze(unsqueeze_dim).expand(1, rotary_mask.shape[1], -1, -1)
+
+    print(f"q.shape = {q.shape}, k.shape = {k.shape}")
+    print(f"rotary_mask.numel() = {rotary_mask.numel()}")
+    print(rotary_mask)
+    if rotary_mask.isnan().all():
+        print(f"rotary_mask is empty")
+
+    seq_len = cos.shape[1]
+    n_heads = rotary_mask.shape[1]
+    head_dims = rotary_mask.shape[-1]
+    print(f"seq_len = {seq_len}, n_heads = {n_heads}, head_dims = {head_dims}")
 
     if rotary_mask is not None:
-        rotary_mask.expand(-1, -1, cos.shape[2], -1)
+        print(f"original: rotary_mask.shape = {rotary_mask.shape}")
+        print(f"original: cos.shape = {cos.shape}")
+        print(f"original: sin.shape = {sin.shape}")
+        cos = cos.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
+        sin = sin.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
+        rotary_mask = rotary_mask.expand(-1, -1, seq_len, -1)
+        print(f"transformed: rotary_mask.shape = {rotary_mask.shape}")
+        print(f"transformed: cos.shape = {cos.shape}")
+        print(f"transformed: sin.shape = {sin.shape}")
         cos = torch.gather(cos, 3, rotary_mask.to(cos.device))
-        sin = torch.gather(sin, 3, rotary_mask.to(cos.device))
+        sin = torch.gather(sin, 3, rotary_mask.to(sin.device))
+        print(f"post-gather: cos.shape = {cos.shape}")
+        print(f"post-gather: sin.shape = {sin.shape}")
     else:
-        raise Exception
+        print(f"rotary_mask is None")
+        print(f"before: cos.shape = {cos.shape}")
+        print(f"before: sin.shape = {sin.shape}")
+        cos = cos.unsqueeze(unsqueeze_dim)
+        sin = sin.unsqueeze(unsqueeze_dim)
+        print(f"before: cos.shape = {cos.shape}")
+        print(f"before: sin.shape = {sin.shape}")
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
+    print(f"q_embed.shape = {q_embed.shape}, k_embed.shape = {k_embed.shape}")
     return q_embed, k_embed
 
 
@@ -222,17 +250,19 @@ def eager_attention_forward(
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: LlamaConfig, layer_idx: int):
+    def __init__(self, config: LlamaConfig, layer_idx: int, layer_rotary_mask: torch.Tensor):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
 
-        self.compressed_qk_dims = config.qk_ranks[layer_idx]
-        self.compressed_vo_dims = config.vo_ranks[layer_idx]
-
         # self.head_dim = getattr(
         #     config, "head_dim", config.hidden_size // config.num_attention_heads
         # )
+
+        self.layer_rotary_mask = layer_rotary_mask
+
+        self.compressed_qk_dims = config.qk_ranks[layer_idx]
+        self.compressed_vo_dims = config.vo_ranks[layer_idx]
 
         self.head_dims = self.compressed_qk_dims // config.num_attention_heads
 
@@ -273,13 +303,6 @@ class LlamaAttention(nn.Module):
             self.compressed_vo_dims,
             config.hidden_size,
             bias=config.attention_bias,
-        )
-
-        self.register_buffer(
-            "layer_rotary_mask",
-            torch.empty((1, config.num_attention_heads, 1, self.head_dims)).to(
-                dtype=torch.int64, device="cuda"
-            ),
         )
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
@@ -344,11 +367,16 @@ class LlamaAttention(nn.Module):
 
 
 class LlamaDecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: LlamaConfig, layer_idx: int):
+    def __init__(self, config: LlamaConfig, layer_idx: int, layer_rotary_mask: torch.Tensor | None):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = LlamaAttention(config=config, layer_idx=layer_idx)
+        if layer_rotary_mask is None:
+            raise Exception
+
+        self.self_attn = LlamaAttention(
+            config=config, layer_idx=layer_idx, layer_rotary_mask=layer_rotary_mask
+        )
 
         self.mlp = LlamaMLP(config, layer_idx)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -417,9 +445,18 @@ class LlamaModel(LlamaPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
+        mask_path = config.mask_path
+        print(f"mask_path = {mask_path}")
+        rotary_masks = torch.load(mask_path, map_location="cuda")
+        if rotary_masks is None:
+            raise Exception("roties none")
+
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [LlamaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [
+                LlamaDecoderLayer(config, layer_idx, rotary_masks[layer_idx])
+                for layer_idx in range(config.num_hidden_layers)
+            ]
         )
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = LlamaRotaryEmbedding(config=config)
