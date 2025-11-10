@@ -6,9 +6,21 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger("MoDeGPT")
 
-# precision to use for nearly all operations
-dtype_p = torch.float64
+"""
+precision to use for nearly all operations
+ - qk compression uses less memory, will ignore this and use f64
+ - vo may too
+"""
+dtype_p = torch.float16
 
+"""
+True if we will be using multiple gpu's to compress
+ - Inference/calibration will not be performed in parallel (though could be done)
+ - Weights will be compressed on the 2nd gpu, while the first GPU holds the entire model
+"""
+parallel = True
+d1 = "cuda:0"
+d2 = "cuda:1" if parallel else "cuda:0"
 
 def load_model(model_name: str, device: int = 0):
     """

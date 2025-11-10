@@ -7,7 +7,7 @@ import torch
 from torch.types import Tensor
 
 from compression_utils import slice_QK_dims, sqrt_M
-from model_utils import get_model_attrs, dtype_p
+from model_utils import get_model_attrs, dtype_p, d1, d2
 from patchers.LlamaRebuild import LlamaForCausalLM
 
 logger = logging.getLogger("MoDeGPT")
@@ -200,14 +200,14 @@ def compress_qk(
             h_start = h * head_dim
             h_end = (h + 1) * head_dim
 
-            Q_head: Tensor = W_q[h_start:h_end, :].to(device="cuda", dtype=dtype_p)
-            K_head: Tensor = W_k[h_start:h_end, :].to(device="cuda", dtype=dtype_p)
+            Q_head: Tensor = W_q[h_start:h_end, :].to(device=d2, dtype=torch.float64)
+            K_head: Tensor = W_k[h_start:h_end, :].to(device=d2, dtype=torch.float64)
             if arch == "opt":
                 Q_head_bias: Tensor = bias_q[h_start:h_end]
                 K_head_bias: Tensor = bias_k[h_start:h_end]
 
-            C_q = cov_q_list[i][h].to(dtype=dtype_p, device="cuda")  # [Hd, Hd]
-            C_k = cov_k_list[i][h].to(dtype=dtype_p, device="cuda")  # [Hd, Hd]
+            C_q = cov_q_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
+            C_k = cov_k_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
 
             sqrt_C_q = sqrt_M(C_q)
             sqrt_C_k = sqrt_M(C_k)
@@ -278,7 +278,7 @@ def compress_head_llama(
 
     # llama requires head dim divisible by two
     rank = rank - (rank % 2)
-    head_dims = sqrt_C_k.shape[-1]
+    head_dims = Q_head.shape[0]
 
     normed_q_r1 = torch.norm(sqrt_C_q[..., : head_dims // 2], dim=0)  # norm for query rotary half 1
     normed_q_r2 = torch.norm(sqrt_C_q[..., head_dims // 2 :], dim=0)
@@ -290,8 +290,9 @@ def compress_head_llama(
     topk = torch.topk(final_norm, k=rank // 2).indices
     Sk = torch.cat((topk, topk + rank // 2))
 
-    new_Q_head = Q_head[Sk].to(Q_head).to(device="cpu")
-    new_K_head = K_head[Sk].to(K_head).to(device="cpu")
+
+    new_Q_head = Q_head[Sk].to(Q_head).to(device="cpu", dtype=torch.float16)
+    new_K_head = K_head[Sk].to(K_head).to(device="cpu", dtype=torch.float16)
 
     return new_Q_head, new_K_head, Sk
 

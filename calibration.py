@@ -3,8 +3,8 @@ import random
 import logging
 
 import torch
-from torch.nn.functional import normalize
 from torch.types import Tensor
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 
 from typing import Tuple
 
@@ -16,7 +16,7 @@ np.random.seed(1234)
 random.seed(1234)
 
 
-print("over here too")
+print("newest")
 
 
 def load_calibs(
@@ -63,6 +63,7 @@ def __calibrate_model(
     texts,
     batch_size: int,
 ):
+    print("hello from __calibrate_model")
     logger.info("Calibrating model")
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
 
@@ -151,29 +152,28 @@ def __calibrate_model(
                 )
             )
             handles.append(
-                block.self_attn.q_proj.register_forward_hook(
-                    _make_proj_hook(
+                block.self_attn.register_forward_pre_hook(
+                    make_llama_attn_hook(
                         layer_idx=i,
-                        cov_list=cov_q_list,
-                        n_heads=n_heads,
-                        head_dim=head_dim,
-                        d_model=d_model,
+                        cov_q_list=cov_q_list,
+                        cov_k_list=cov_k_list,
                         logger=logger,
-                    )
+                    ),
+                    with_kwargs=True,
                 )
             )
-            handles.append(
-                block.self_attn.k_proj.register_forward_hook(
-                    _make_proj_hook(
-                        layer_idx=i,
-                        cov_list=cov_k_list,
-                        n_heads=n_heads,
-                        head_dim=head_dim,
-                        d_model=d_model,
-                        logger=logger,
-                    )
-                )
-            )
+            # handles.append(
+            #     block.self_attn.k_proj.register_forward_hook(
+            #         _make_proj_hook(
+            #             layer_idx=i,
+            #             cov_list=cov_k_list,
+            #             n_heads=n_heads,
+            #             head_dim=head_dim,
+            #             d_model=d_model,
+            #             logger=logger,
+            #         )
+            #     )
+            # )
 
     model.eval()
     n_texts = 0
@@ -259,20 +259,67 @@ def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_di
 
 
 @torch.no_grad()
+def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
+    from patchers.LlamaRebuild import LlamaAttention
+
+    def hook(module: LlamaAttention, args, kwargs: dict):
+        hidden_states: Tensor = kwargs["hidden_states"]
+        position_embeddings: tuple[Tensor, Tensor] = kwargs["position_embeddings"]
+        q_proj, k_proj = module.q_proj, module.k_proj
+        n_heads, head_dim = module.config.num_attention_heads, module.head_dim
+
+        input_shape = hidden_states.shape[:-1]  # (batch_size, seq_len)
+        bsz, seq_len, d_model = hidden_states.shape
+
+        query_states = q_proj(hidden_states)  # [batch_size, seq_len, d_model]
+        key_states = k_proj(hidden_states)  # [batch_size, seq_len, d_model]
+
+        query_states = query_states.view((*input_shape, -1, head_dim)).transpose(1, 2)
+        key_states = key_states.view((*input_shape, -1, head_dim)).transpose(1, 2)
+        # qk: [batch_size, n_heads, seq_len, head_dims] .. (after transpose 1,2)
+
+        cos, sin = position_embeddings
+
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        query_states: Tensor = query_states.transpose(1, 2)
+        key_states: Tensor = key_states.transpose(1, 2)
+        # qk: [batch_size, seq_len, n_heads, head_dims]
+
+        query_states = query_states.view(bsz * seq_len, n_heads, head_dim)
+        key_states = key_states.view(bsz * seq_len, n_heads, head_dim)
+        # qk: [B*T, n_heads, head_dims]
+
+        query_states = query_states.permute(1, 0, 2).to(dtype=dtype_p)
+        key_states = query_states.permute(1, 0, 2).to(dtype=dtype_p)
+        # qk: [n_heads, B*T, head_dims]
+        print("in here")
+
+        # [n_heads, head_dims, B*T] @ [n_heads, B*T, head_dims]
+        # = [n_heads, head_dims, head_dims]
+        query_covariance = torch.bmm(query_states.transpose(1, 2), query_states).to(device="cpu")
+        key_covariance = torch.bmm(key_states.transpose(1, 2), key_states).to(device="cpu")
+        # qk_cov[n_heads, head_dims, head_dims]
+
+        count = 0
+        for cov_q_h, cov_k_h in zip(query_covariance, key_covariance):
+            logger.info("all good")
+            print("all good")
+            cov_q_list[layer_idx][count] += cov_q_h
+            cov_k_list[layer_idx][count] += cov_k_h
+
+    return hook
+
+
+@torch.no_grad()
 def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):
     def hook(module: torch.nn.Linear, inp, out):
-        # try:
-        # this can also be easily vectorized (no need to calculate C_proj over entire proj)
-        proj_out = out.detach().to(dtype=dtype_p, device="cpu")  # [B,T, d_model]
+        proj_out = out.detach().to(dtype=dtype_p, device="cuda")  # [B,T, d_model]
         proj = proj_out.view(-1, d_model)  # [B*T, d_model]
         C_proj = proj.T @ proj
-        C_proj = C_proj.to(device="cpu")
+        C_proj = C_proj
         for h in range(n_heads):
             h_proj = C_proj[h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim]
-            cov_list[layer_idx][h] += h_proj
-
-    # except Exception as e:
-    #     if logger:
-    #         logger.warning(f"[Hook] Q/K proj failed at layer {layer_idx}: {e}")
+            cov_list[layer_idx][h] += h_proj.to(device="cpu")
 
     return hook

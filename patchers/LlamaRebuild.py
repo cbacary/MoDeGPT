@@ -148,31 +148,31 @@ def apply_rotary_pos_emb(
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
 
-    print(f"q.shape = {q.shape}, k.shape = {k.shape}")
-    print(f"rotary_mask.numel() = {rotary_mask.numel()}")
-    print(rotary_mask)
+    # print(f"q.shape = {q.shape}, k.shape = {k.shape}")
+    # print(f"rotary_mask.numel() = {rotary_mask.numel()}")
+    # print(rotary_mask)
     if rotary_mask.isnan().all():
         print(f"rotary_mask is empty")
 
     seq_len = cos.shape[1]
     n_heads = rotary_mask.shape[1]
     head_dims = rotary_mask.shape[-1]
-    print(f"seq_len = {seq_len}, n_heads = {n_heads}, head_dims = {head_dims}")
+    # print(f"seq_len = {seq_len}, n_heads = {n_heads}, head_dims = {head_dims}")
 
     if rotary_mask is not None:
-        print(f"original: rotary_mask.shape = {rotary_mask.shape}")
-        print(f"original: cos.shape = {cos.shape}")
-        print(f"original: sin.shape = {sin.shape}")
+        # print(f"original: rotary_mask.shape = {rotary_mask.shape}")
+        # print(f"original: cos.shape = {cos.shape}")
+        # print(f"original: sin.shape = {sin.shape}")
         cos = cos.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
         sin = sin.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
         rotary_mask = rotary_mask.expand(-1, -1, seq_len, -1)
-        print(f"transformed: rotary_mask.shape = {rotary_mask.shape}")
-        print(f"transformed: cos.shape = {cos.shape}")
-        print(f"transformed: sin.shape = {sin.shape}")
+        # print(f"transformed: rotary_mask.shape = {rotary_mask.shape}")
+        # print(f"transformed: cos.shape = {cos.shape}")
+        # print(f"transformed: sin.shape = {sin.shape}")
         cos = torch.gather(cos, 3, rotary_mask.to(cos.device))
         sin = torch.gather(sin, 3, rotary_mask.to(sin.device))
-        print(f"post-gather: cos.shape = {cos.shape}")
-        print(f"post-gather: sin.shape = {sin.shape}")
+        # print(f"post-gather: cos.shape = {cos.shape}")
+        # print(f"post-gather: sin.shape = {sin.shape}")
     else:
         print(f"rotary_mask is None")
         print(f"before: cos.shape = {cos.shape}")

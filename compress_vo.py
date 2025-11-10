@@ -6,7 +6,7 @@ import torch
 from torch.types import Tensor
 
 from compression_utils import get_V_O_weights, slice_VO_dims, sqrt_M
-from model_utils import get_model_attrs, dtype_p
+from model_utils import get_model_attrs, dtype_p, d1, d2
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -25,7 +25,7 @@ def compress_vo(
         rank_i = int(head_dim * keep_ratio)
         rank_i = max(1, rank_i)
 
-        C = cov[layer].to(device="cuda")
+        C = cov[layer].to(device=d2)
         sqrt_C = sqrt_M(C)
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
@@ -88,8 +88,8 @@ def compress_head(
     # V_head [head_dims, d_model], O_head [d_model, head_dims]
     # sqrt_C [d_model, d_model]
 
-    V_head = W_v[head_s:head_e, :].to(dtype=dtype_p, device="cuda")
-    O_head = W_o[:, head_s:head_e].to(dtype=dtype_p, device="cuda")
+    V_head = W_v[head_s:head_e, :].to(dtype=dtype_p, device=d2)
+    O_head = W_o[:, head_s:head_e].to(dtype=dtype_p, device=d2)
 
     # V_head needs to be transposed because we expect a tensor of (in_features, out_features)
     # but torch stores weights as (out_features, in_features)
