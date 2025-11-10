@@ -152,7 +152,7 @@ def __calibrate_model(
                 )
             )
             handles.append(
-                block.self_attn.register_forward_pre_hook(
+                block.self_attn.register_forward_hook(
                     make_llama_attn_hook(
                         layer_idx=i,
                         cov_q_list=cov_q_list,
@@ -263,24 +263,34 @@ def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
     from patchers.LlamaRebuild import LlamaAttention
 
     def hook(module: LlamaAttention, args, kwargs: dict):
+        
         hidden_states: Tensor = kwargs["hidden_states"]
         position_embeddings: tuple[Tensor, Tensor] = kwargs["position_embeddings"]
-        q_proj, k_proj = module.q_proj, module.k_proj
-        n_heads, head_dim = module.config.num_attention_heads, module.head_dim
 
         input_shape = hidden_states.shape[:-1]  # (batch_size, seq_len)
         bsz, seq_len, d_model = hidden_states.shape
 
-        query_states = q_proj(hidden_states)  # [batch_size, seq_len, d_model]
-        key_states = k_proj(hidden_states)  # [batch_size, seq_len, d_model]
+        n_heads, head_dim = module.config.num_attention_heads, module.head_dim
 
-        query_states = query_states.view((*input_shape, -1, head_dim)).transpose(1, 2)
-        key_states = key_states.view((*input_shape, -1, head_dim)).transpose(1, 2)
-        # qk: [batch_size, n_heads, seq_len, head_dims] .. (after transpose 1,2)
+        # hopefully this isn't neccecary
+        def calc_roped_qk():
+            q_proj, k_proj = module.q_proj, module.k_proj
 
-        cos, sin = position_embeddings
+            query_states = q_proj(hidden_states)  # [batch_size, seq_len, d_model]
+            key_states = k_proj(hidden_states)  # [batch_size, seq_len, d_model]
 
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+            query_states = query_states.view((*input_shape, -1, head_dim)).transpose(1, 2)
+            key_states = key_states.view((*input_shape, -1, head_dim)).transpose(1, 2)
+            # qk: [batch_size, n_heads, seq_len, head_dims] .. (after transpose 1,2)
+
+            cos, sin = position_embeddings
+
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+            
+            # qk: [batch_size, n_heads, seq_len, head_dims]
+            return query_states, key_states
+
+
 
         query_states: Tensor = query_states.transpose(1, 2)
         key_states: Tensor = key_states.transpose(1, 2)

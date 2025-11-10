@@ -6,4 +6,6 @@ calibs/
 .venv/
 uv.lock
 
+patched_models/
+
 notes.md

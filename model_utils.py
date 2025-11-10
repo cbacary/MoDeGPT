@@ -2,7 +2,8 @@ import logging
 import os
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -22,35 +23,56 @@ parallel = True
 d1 = "cuda:0"
 d2 = "cuda:1" if parallel else "cuda:0"
 
-def load_model(model_name: str, device: int = 0):
+def load_model(model_name: str, patched_models_dir = "./patched_models/", device: int = 0):
     """
-    Load the original HuggingFace model and tokenizer,
-    using float16 precision and specifying an explicit CUDA device.
-    Do not use device_map='auto' to ensure stable loading.
+    Loads the patched version of the model. Loading of the original model should only have to 
+    be done once
     """
-    try:
-        logger.info(f"Loading model from: {model_name}")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+    from patchers.patch import patch_config
 
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True,
-        )
-        model.to(f"cuda:{device}")
-        logger.info(f"✔ Loaded model on cuda:{device} with float16.")
+    model_dir = os.path.join(patched_models_dir, model_name)
+    if os.path.exists(model_dir):
+        import shutil
 
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-            logger.info("No pad_token found. Set pad_token = eos_token.")
+        rebuild_path = "./patchers/LlamaRebuild.py"
+        shutil.copy(rebuild_path, model_dir)
+        model, tokenizer = reload_compressed_model(model_dir)
 
-        model.eval()
         return model, tokenizer, model.config
 
-    except Exception as e:
-        logger.error(f"[Error] Failed to load model {model_name}: {e}")
-        raise
+    os.makedirs(model_dir, exist_ok=True)
 
+    logger.info(f"Loading model from: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+    )
+    model.to(f"cuda:{device}")
+    logger.info(f"✔ Loaded model on cuda:{device} with float16.")
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        logger.info("No pad_token found. Set pad_token = eos_token.")
+
+    patch_config(model)
+    arch = model.config.model_type
+    if arch == "opt":
+        rebuild_path = "./patchers/OPTRebuild.py"
+    elif arch == "llama":
+        rebuild_path = "./patchers/LlamaRebuild.py"
+    else:
+        raise AttributeError("Must provide patched modeling script")
+
+    save_compressed_model(model, tokenizer, None, rebuild_path, model_dir, model_name)
+    del model
+    del tokenizer
+    torch.cuda.empty_cache()
+    model, tokenizer = reload_compressed_model(model_dir)
+
+    model.eval()
+    return model, tokenizer, model.config
 
 def save_model(model: torch.nn.Module, tokenizer, save_dir: str, source_model_name: str):
     """
@@ -78,7 +100,7 @@ def save_model(model: torch.nn.Module, tokenizer, save_dir: str, source_model_na
 def save_compressed_model(
     model: torch.nn.Module,
     tokenizer,
-    rotary_masks: list[torch.Tensor],
+    rotary_masks: torch.Tensor | None,
     rebuild_path: str,
     save_dir: str,
     source_model_name: str,
@@ -87,14 +109,17 @@ def save_compressed_model(
 
     os.makedirs(save_dir, exist_ok=True)
 
-    mask_path = os.path.abspath(os.path.join(save_dir, "rotary_masks.pt"))
-    model.config.mask_path = mask_path
+    if rotary_masks is not None:
+        mask_path = os.path.abspath(os.path.join(save_dir, "rotary_masks.pt"))
+        model.config.mask_path = mask_path
+    else:
+        model.config.mask_path = None
+
     model.save_pretrained(save_dir, torch_dtype=torch.float16)
     tokenizer.save_pretrained(save_dir)
-    torch.save(rotary_masks, mask_path)
-
+    if rotary_masks is not None:
+        torch.save(rotary_masks, mask_path)
     shutil.copy(rebuild_path, save_dir)
-
     with open(os.path.join(save_dir, "tokenizer_source.txt"), "w") as f:
         f.write(source_model_name.strip())
 

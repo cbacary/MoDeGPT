@@ -243,6 +243,7 @@ def compress_qk(
                 final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
             final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
             rotary_masks.append(final)
+            # model.model.layers[i].self_attn.layer_rotary_mask = final.to(device=W_q.device)
 
             # final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
 

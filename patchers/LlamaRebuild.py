@@ -151,15 +151,15 @@ def apply_rotary_pos_emb(
     # print(f"q.shape = {q.shape}, k.shape = {k.shape}")
     # print(f"rotary_mask.numel() = {rotary_mask.numel()}")
     # print(rotary_mask)
-    if rotary_mask.isnan().all():
+    if rotary_mask is None:
         print(f"rotary_mask is empty")
 
     seq_len = cos.shape[1]
-    n_heads = rotary_mask.shape[1]
-    head_dims = rotary_mask.shape[-1]
     # print(f"seq_len = {seq_len}, n_heads = {n_heads}, head_dims = {head_dims}")
 
     if rotary_mask is not None:
+        n_heads = rotary_mask.shape[1]
+        head_dims = rotary_mask.shape[-1]
         # print(f"original: rotary_mask.shape = {rotary_mask.shape}")
         # print(f"original: cos.shape = {cos.shape}")
         # print(f"original: sin.shape = {sin.shape}")
@@ -250,7 +250,7 @@ def eager_attention_forward(
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: LlamaConfig, layer_idx: int, layer_rotary_mask: torch.Tensor):
+    def __init__(self, config: LlamaConfig, layer_idx: int, layer_rotary_mask: torch.Tensor | None):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -258,8 +258,6 @@ class LlamaAttention(nn.Module):
         # self.head_dim = getattr(
         #     config, "head_dim", config.hidden_size // config.num_attention_heads
         # )
-
-        self.layer_rotary_mask = layer_rotary_mask
 
         self.compressed_qk_dims = config.qk_ranks[layer_idx]
         self.compressed_vo_dims = config.vo_ranks[layer_idx]
@@ -304,6 +302,7 @@ class LlamaAttention(nn.Module):
             config.hidden_size,
             bias=config.attention_bias,
         )
+        self.layer_rotary_mask = layer_rotary_mask
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
@@ -370,9 +369,6 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: LlamaConfig, layer_idx: int, layer_rotary_mask: torch.Tensor | None):
         super().__init__()
         self.hidden_size = config.hidden_size
-
-        if layer_rotary_mask is None:
-            raise Exception
 
         self.self_attn = LlamaAttention(
             config=config, layer_idx=layer_idx, layer_rotary_mask=layer_rotary_mask
@@ -446,15 +442,15 @@ class LlamaModel(LlamaPreTrainedModel):
         self.vocab_size = config.vocab_size
 
         mask_path = config.mask_path
-        print(f"mask_path = {mask_path}")
-        rotary_masks = torch.load(mask_path, map_location="cuda")
-        if rotary_masks is None:
-            raise Exception("roties none")
+        rotary_masks = None
+        if mask_path is not None:
+            print(f"mask_path = {mask_path}")
+            rotary_masks = torch.load(mask_path, map_location="cuda")
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
             [
-                LlamaDecoderLayer(config, layer_idx, rotary_masks[layer_idx])
+                LlamaDecoderLayer(config, layer_idx, None if rotary_masks is None else rotary_masks[layer_idx])
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )

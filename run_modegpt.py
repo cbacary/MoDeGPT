@@ -4,7 +4,8 @@ import os
 
 import torch
 
-from calibration import get_model_attrs, load_calibs
+from model_utils import get_model_attrs
+from calibration import load_calibs
 from compress_qk import compress_qk, compress_qk_svd
 from compress_mlp import compress_mlp
 from compress_vo import compress_vo
@@ -137,7 +138,7 @@ def main():
     save_compressed_model(
         model,
         tokenizer,
-        rotary_masks=rotary_masks,
+        rotary_masks,
         rebuild_path=rebuild_path,
         save_dir=args.output_dir,
         source_model_name=args.model,

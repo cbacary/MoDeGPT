@@ -7,7 +7,6 @@ from torch.types import Tensor
 
 logger = logging.getLogger("MoDeGPT")
 
-from model_utils import dtype_p
 
 
 @torch.no_grad
@@ -291,6 +290,8 @@ def allocate_global_sparsity(
     compression_ratio: float,
     smoothing: float = 1.0,
 ):
+
+    from model_utils import dtype_p
     from torch.nn.functional import softmax
 
     n_layers = len(bi_scores)
