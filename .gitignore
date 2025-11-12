@@ -7,5 +7,6 @@ calibs/
 uv.lock
 
 patched_models/
+init-modegpt.sh
 
 notes.md
