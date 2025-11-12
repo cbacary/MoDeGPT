@@ -26,6 +26,7 @@ def compress_vo(
         rank_i = max(1, rank_i)
 
         C = cov[layer].to(device=d2)
+        C += ridge_lambda * torch.eye(C.shape[0], device=C.device, dtype=dtype_p)
         sqrt_C = sqrt_M(C)
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
@@ -66,7 +67,6 @@ def compress_vo(
             logger.info(
                 f"[VO] ✅ Compressed layer {layer} to rank {rank_i} per head (λ={ridge_lambda})"
             )
-        torch.cuda.empty_cache()
 
 
 def compress_head(
@@ -82,6 +82,7 @@ def compress_head(
     new_heads_O: list[Tensor],
     slice_dims=True,
 ) -> tuple[Tensor, Tensor]:
+    rank_i = rank_i - (rank_i % 2)
     # head_start_idx, head_end_idx
     head_s, head_e = head_idx * head_dim, (head_idx + 1) * head_dim
     # head_dims = head_dims, d_model = hidden dimensions

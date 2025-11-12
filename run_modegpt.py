@@ -99,6 +99,7 @@ def main():
         )
 
     slice_vo_qk = True
+    rotary_masks = None
     if "qk" not in skip:
         if arch == "opt":
             compress_qk_svd(
@@ -143,10 +144,15 @@ def main():
         save_dir=args.output_dir,
         source_model_name=args.model,
     )
+    
 
     del model
+    del tokenizer
+    del cov_k
+    del cov_q
+    del cov_x
     torch.cuda.empty_cache()
-    model, tokenizer = reload_compressed_model(args.output_dir)
+    model, tokenizer = reload_compressed_model(args.output_dir, device=0)
 
     # if slice_vo_qk:
     #     from compression_utils import patch_OPT
@@ -154,9 +160,11 @@ def main():
     #     patch_OPT(
     #         model,
     #     )
-
-    model.cuda()
-    compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
+    # eval_texts = load_eval_texts(
+    #     args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
+    # )
+    model.to(device="cuda:0")
+    compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, device=0)
     logger.info(f"Compressed model perplexity on WikiText2: {compressed_ppl:.2f}")
 
 

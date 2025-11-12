@@ -8,7 +8,7 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
 
 from typing import Tuple
 
-from model_utils import get_model_attrs, dtype_p
+from model_utils import get_model_attrs, dtype_p, calib_device
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -27,24 +27,45 @@ def load_calibs(
     load_calibs_from="",
     calibs_save_path="",
 ):
-    print("i wonder if i'll see this")
+    def recursive_cast(obj, dtype, device):
+        """
+        Cause i was stupid, the tensors (wrapped in many, many python arrays) 
+        have to be recast like this. ya live ya learn
+        """
+        if isinstance(obj, torch.Tensor):
+            return obj.to(dtype=dtype, device=device)
+        elif isinstance(obj, dict):
+            return {k: recursive_cast(v, dtype, device) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [recursive_cast(elem, dtype, device) for elem in obj]
+        elif isinstance(obj, tuple):
+            return tuple(recursive_cast(elem, dtype, device) for elem in obj)
+        else:
+            return obj
     if not load_calibs_from:
         logger.info("Calibrating model...")
         cov_mlp, cov_q, cov_k, cov_x, bi_scores = __calibrate_model(
             model, tokenizer, texts, batch_size=batch_size
         )
     else:
-        covs = torch.load(load_calibs_from)
+        covs: dict = torch.load(load_calibs_from, map_location=torch.device("cpu"))
+        # covs = torch.load(load_calibs_from, device=calib_device)
 
-        cov_mlp = covs["cov_mlp"]
+        # covs.pop("cov_mlp")
+        covs = recursive_cast(covs, dtype_p, calib_device)
+
+        # cov_mlp = covs["cov_mlp"]
+        cov_mlp = None
         cov_q = covs["cov_q"]
         cov_k = covs["cov_k"]
         cov_x = covs["cov_x"]
         bi_scores = covs["bi_scores"]
+        
+        
 
     if calibs_save_path:
         covs = {
-            "cov_mlp": cov_mlp,
+            # "cov_mlp": cov_mlp,
             "cov_q": cov_q,
             "cov_k": cov_k,
             "cov_x": cov_x,
@@ -94,25 +115,26 @@ def __calibrate_model(
         return n_inner
 
     # store these on the cpu otherwise big boom on gpu
-    cov_mlp_list = [
-        torch.zeros(
-            get_inner(transformer_blocks[i]),
-            get_inner(transformer_blocks[i]),
-            dtype=dtype_p,
-            device="cpu",
-        )
-        for i in range(n_layers)
-    ]
+    # cov_mlp_list = [
+    #     torch.zeros(
+    #         get_inner(transformer_blocks[i]),
+    #         get_inner(transformer_blocks[i]),
+    #         dtype=dtype_p,
+    #         device=calib_device,
+    #     )
+    #     for i in range(n_layers)
+    # ]
+    cov_mlp_list = None
     cov_q_list = [
-        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device="cpu") for _ in range(n_heads)]
+        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device=calib_device) for _ in range(n_heads)]
         for _ in range(n_layers)
     ]
     cov_k_list = [
-        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device="cpu") for _ in range(n_heads)]
+        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device=calib_device) for _ in range(n_heads)]
         for _ in range(n_layers)
     ]
     # correlation input for type 3 compression, with d_h x d_h shape (hidden dimension x hidden dimension)
-    cov_x_list = [torch.zeros(d_model, d_model, dtype=dtype_p) for _ in range(n_layers)]
+    cov_x_list = [torch.zeros(d_model, d_model, dtype=dtype_p, device=calib_device) for _ in range(n_layers)]
 
     bi_scores = [0.0 for _ in range(n_layers)]
 
@@ -146,11 +168,11 @@ def __calibrate_model(
             # For llama MLP, i think we can pre-register the hook on down projection,
             # see line 155 modeling llama. the input to pre_forward hook would map to:
             # σ_s(X @ W_U ) := X @ Wu * σ_g (X @ Wg)
-            handles.append(
-                block.mlp.down_proj.register_forward_pre_hook(
-                    llama_pre_gate_hook(i, cov_mlp_list, logger)
-                )
-            )
+            # handles.append(
+            #     block.mlp.down_proj.register_forward_pre_hook(
+            #         llama_pre_gate_hook(i, cov_mlp_list, logger)
+            #     )
+            # )
             handles.append(
                 block.self_attn.register_forward_hook(
                     make_llama_attn_hook(
@@ -192,7 +214,7 @@ def __calibrate_model(
             bi_scores[l] += (
                 torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0).mean().item()
             )
-            cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device="cpu")
+            cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device=calib_device)
 
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
     #####
@@ -217,8 +239,8 @@ def __calibrate_model(
 def llama_pre_gate_hook(layer_idx, cov_mlp_list, logger=None):
     def hook(module, input: Tuple[torch.Tensor]):
         x_input = input[0]
-        H = x_input.to(device="cpu").detach().to(dtype=dtype_p).view(-1, x_input.size(-1))
-        cov_mlp_list[layer_idx] += (H.T @ H).to(device="cpu")
+        H = x_input.to(device=calib_device).detach().to(dtype=dtype_p).view(-1, x_input.size(-1))
+        cov_mlp_list[layer_idx] += (H.T @ H).to(device=calib_device)
 
         return None
 
@@ -231,9 +253,9 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
         # out [B*T, D_int]
         # reallly we should grab the activation function directly
         # from the model its something like model.decoder....act_fn()
-        act = torch.nn.functional.relu(out.to(dtype=dtype_p, device="cpu"))
+        act = torch.nn.functional.relu(out.to(dtype=dtype_p, device=calib_device))
         H = act.detach().to(dtype=dtype_p).view(-1, act.size(-1))
-        cov_mlp_list[layer_idx] += (H.T @ H).to(device="cpu")
+        cov_mlp_list[layer_idx] += (H.T @ H).to(device=calib_device)
 
     return hook
 
@@ -242,7 +264,7 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
 def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger=None):
     def hook(module, inp, out):
         try:
-            out = out.detach().to(dtype=dtype_p, device="cpu")
+            out = out.detach().to(dtype=dtype_p, device=calib_device)
             q_block, k_block, _ = out.split(d_model, dim=2)
             Q = q_block.view(-1, d_model)
             K = k_block.view(-1, d_model)
@@ -262,7 +284,7 @@ def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_di
 def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
     from patchers.LlamaRebuild import LlamaAttention
 
-    def hook(module: LlamaAttention, args, kwargs: dict):
+    def hook(module: LlamaAttention, args, kwargs: dict, out):
         
         hidden_states: Tensor = kwargs["hidden_states"]
         position_embeddings: tuple[Tensor, Tensor] = kwargs["position_embeddings"]
@@ -270,7 +292,7 @@ def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
         input_shape = hidden_states.shape[:-1]  # (batch_size, seq_len)
         bsz, seq_len, d_model = hidden_states.shape
 
-        n_heads, head_dim = module.config.num_attention_heads, module.head_dim
+        n_heads, head_dim = module.config.num_attention_heads, module.head_dims
 
         # hopefully this isn't neccecary
         def calc_roped_qk():
@@ -290,7 +312,8 @@ def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
             # qk: [batch_size, n_heads, seq_len, head_dims]
             return query_states, key_states
 
-
+        query_states = module.roped_query_states
+        key_states = module.roped_key_states
 
         query_states: Tensor = query_states.transpose(1, 2)
         key_states: Tensor = key_states.transpose(1, 2)
@@ -301,22 +324,28 @@ def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
         # qk: [B*T, n_heads, head_dims]
 
         query_states = query_states.permute(1, 0, 2).to(dtype=dtype_p)
-        key_states = query_states.permute(1, 0, 2).to(dtype=dtype_p)
+        key_states = key_states.permute(1, 0, 2).to(dtype=dtype_p)
         # qk: [n_heads, B*T, head_dims]
-        print("in here")
+        print("got the fixed thing")
 
         # [n_heads, head_dims, B*T] @ [n_heads, B*T, head_dims]
         # = [n_heads, head_dims, head_dims]
-        query_covariance = torch.bmm(query_states.transpose(1, 2), query_states).to(device="cpu")
-        key_covariance = torch.bmm(key_states.transpose(1, 2), key_states).to(device="cpu")
+        query_covariance = torch.bmm(query_states.transpose(1, 2), query_states).to(device=calib_device)
+        key_covariance = torch.bmm(key_states.transpose(1, 2), key_states).to(device=calib_device)
         # qk_cov[n_heads, head_dims, head_dims]
 
         count = 0
         for cov_q_h, cov_k_h in zip(query_covariance, key_covariance):
-            logger.info("all good")
-            print("all good")
             cov_q_list[layer_idx][count] += cov_q_h
             cov_k_list[layer_idx][count] += cov_k_h
+            
+            if (~torch.isfinite(cov_q_h)).any():
+                print(f"cov_q_h at {layer_idx} head {count} has nan/inf")
+            if (~torch.isfinite(cov_k_h)).any():
+                print(f"cov_k_h at {layer_idx} head {count} has nan/inf")
+
+        del module.roped_query_states
+        del module.roped_key_states
 
     return hook
 
@@ -330,6 +359,6 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None
         C_proj = C_proj
         for h in range(n_heads):
             h_proj = C_proj[h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim]
-            cov_list[layer_idx][h] += h_proj.to(device="cpu")
+            cov_list[layer_idx][h] += h_proj.to(device=calib_device)
 
     return hook

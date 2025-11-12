@@ -209,6 +209,9 @@ def compress_qk(
             C_q = cov_q_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
             C_k = cov_k_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
 
+            C_q += ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device, dtype=C_q.dtype)
+            C_k += ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device, dtype=C_k.dtype)
+
             sqrt_C_q = sqrt_M(C_q)
             sqrt_C_k = sqrt_M(C_k)
 
@@ -241,6 +244,7 @@ def compress_qk(
             final = torch.tensor([], dtype=torch.int64, device="cuda")
             for mask_head in layer_rotary_mask:
                 final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
+            
             final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
             rotary_masks.append(final)
             # model.model.layers[i].self_attn.layer_rotary_mask = final.to(device=W_q.device)
@@ -287,15 +291,23 @@ def compress_head_llama(
     normed_k_r2 = torch.norm(sqrt_C_k[..., head_dims // 2 :], dim=0)  # norm for key rotary half 2
 
     final_norm = normed_q_r1**2 * normed_k_r1**2 + normed_q_r2**2 * normed_k_r2**2
+    final_norm = torch.sqrt(final_norm)
+    final_norm /= final_norm.sum()
 
     topk = torch.topk(final_norm, k=rank // 2).indices
-    Sk = torch.cat((topk, topk + rank // 2))
+    Sk_mask = torch.cat((topk, topk + rank // 2))
 
+    Sk = torch.eye(head_dims, device=d2, dtype=dtype_p)[:, Sk_mask]
 
-    new_Q_head = Q_head[Sk].to(Q_head).to(device="cpu", dtype=torch.float16)
-    new_K_head = K_head[Sk].to(K_head).to(device="cpu", dtype=torch.float16)
+    new_Q_head = Q_head.T @ Sk
+    new_K_head = K_head.T @ Sk
+    new_Q_head = new_Q_head.T
+    new_K_head = new_K_head.T
+    
+    # new_Q_head = Q_head[Sk_mask].to(Q_head).to(device="cpu", dtype=torch.float16)
+    # new_K_head = K_head[Sk_mask].to(K_head).to(device="cpu", dtype=torch.float16)
 
-    return new_Q_head, new_K_head, Sk
+    return new_Q_head, new_K_head, Sk_mask
 
 
 def compress_head_opt(

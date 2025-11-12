@@ -7,6 +7,7 @@ from torch.types import Tensor
 
 logger = logging.getLogger("MoDeGPT")
 
+from model_utils import d1, d2, dtype_p
 
 
 @torch.no_grad

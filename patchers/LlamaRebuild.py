@@ -144,6 +144,9 @@ def apply_rotary_pos_emb(
             k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
             cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
             the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+        rotary_mask (`torch.Tensor | None`): 
+            Has shape [1, n_heads, 1, layer_head_dims], where the last dimension specifies which "columns" to choose
+            from the cos, sin tensors
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
@@ -174,17 +177,17 @@ def apply_rotary_pos_emb(
         # print(f"post-gather: cos.shape = {cos.shape}")
         # print(f"post-gather: sin.shape = {sin.shape}")
     else:
-        print(f"rotary_mask is None")
-        print(f"before: cos.shape = {cos.shape}")
-        print(f"before: sin.shape = {sin.shape}")
+        # print(f"rotary_mask is None")
+        # print(f"before: cos.shape = {cos.shape}")
+        # print(f"before: sin.shape = {sin.shape}")
         cos = cos.unsqueeze(unsqueeze_dim)
         sin = sin.unsqueeze(unsqueeze_dim)
-        print(f"before: cos.shape = {cos.shape}")
-        print(f"before: sin.shape = {sin.shape}")
+        # print(f"before: cos.shape = {cos.shape}")
+        # print(f"before: sin.shape = {sin.shape}")
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
-    print(f"q_embed.shape = {q_embed.shape}, k_embed.shape = {k_embed.shape}")
+    # print(f"q_embed.shape = {q_embed.shape}, k_embed.shape = {k_embed.shape}")
     return q_embed, k_embed
 
 
@@ -278,7 +281,7 @@ class LlamaAttention(nn.Module):
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.num_attention_heads = config.num_attention_heads
 
-        self.scaling = self.compressed_qk_dims**-0.5
+        self.scaling = self.head_dims**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
@@ -338,13 +341,15 @@ class LlamaAttention(nn.Module):
             query_states, key_states, cos, sin, rotary_mask=self.layer_rotary_mask
         )
 
+        self.roped_query_states = query_states
+        self.roped_key_states = key_states
+
         if past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(
                 key_states, value_states, self.layer_idx, cache_kwargs
             )
-
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]

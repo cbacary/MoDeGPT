@@ -4,7 +4,7 @@ import logging
 import torch
 
 from compression_utils import slice_gate_dims
-from model_utils import get_model_attrs, dtype_p
+from model_utils import get_model_attrs, dtype_p, d2
 
 # from transformers.models.llama.modeling_llama
 
@@ -48,10 +48,10 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
             bias_g = proj_gate.bias
             bias_d = proj_d.bias
 
-            W_g = W_g.to(dtype=dtype_p, device="cuda")
+            W_g = W_g.to(dtype=dtype_p, device=d2)
 
         keep_ratio = keep_ratios[i]
-        C = cov[i].to(dtype=dtype_p, device="cuda")  # [D_int, D_int]
+        C = cov[i].to(dtype=dtype_p, device=d2)  # [D_int, D_int]
         D_int = C.shape[0]
         rank_i = int(D_int * keep_ratio)
         rank_i = max(1, min(rank_i, D_int))
@@ -63,13 +63,13 @@ def compress_mlp(model, cov, keep_ratios, ridge_lambda=1e-4, slice_dims=True):
 
         topk = torch.topk(scores, k=rank_i, largest=True, dim=0).indices
         topk_selector = torch.tensor([1 if j in topk else 0 for j in range(D_int)]).to(
-            dtype=torch.bool, device="cuda"
+            dtype=torch.bool, device=d2
         )
 
         Sk = torch.eye(D_int, device=C.device, dtype=dtype_p)[:, topk_selector]  # [D_int, rank_i]
 
-        W_u = W_u.to(dtype=dtype_p, device="cuda")  # [D_int, D_h]
-        W_d = W_d.to(dtype=dtype_p, device="cuda")  # [D_h, D_int]
+        W_u = W_u.to(dtype=dtype_p, device=d2)  # [D_int, D_h]
+        W_d = W_d.to(dtype=dtype_p, device=d2)  # [D_h, D_int]
 
         new_bias_u, new_bias_g, new_bias_d = None, None, None
 

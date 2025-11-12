@@ -109,6 +109,9 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
         outputs = model(**inputs, labels=inputs["input_ids"])
         loss = outputs.loss
 
+        num_tokens = inputs["attention_mask"].sum().item()
+        print(num_tokens)
+
         if not torch.isfinite(loss):
             print("not torch.isfinite(loss)")
             continue
