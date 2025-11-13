@@ -178,6 +178,9 @@ def compress_qk(
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
         rank_i = max(1, min(rank_i, head_dim))
 
+        if arch == "llama":
+            rank_i = rank_i - (rank_i % 2)
+
         if arch == "opt":
             block = model.model.decoder.layers[i]  # OPT
             W_q = block.self_attn.q_proj.weight
@@ -209,8 +212,8 @@ def compress_qk(
             C_q = cov_q_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
             C_k = cov_k_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
 
-            C_q += ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device, dtype=C_q.dtype)
-            C_k += ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device, dtype=C_k.dtype)
+            # C_q += ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device, dtype=C_q.dtype)
+            # C_k += ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device, dtype=C_k.dtype)
 
             sqrt_C_q = sqrt_M(C_q)
             sqrt_C_k = sqrt_M(C_k)
@@ -280,9 +283,13 @@ def compress_head_llama(
     K_head: Tensor,
     rank: int,
 ):
+    
+    """
+    llama uses RoPE so its a little different than for OPT.
 
-    # llama requires head dim divisible by two
-    rank = rank - (rank % 2)
+    Each 
+    """
+
     head_dims = Q_head.shape[0]
 
     normed_q_r1 = torch.norm(sqrt_C_q[..., : head_dims // 2], dim=0)  # norm for query rotary half 1
@@ -294,18 +301,30 @@ def compress_head_llama(
     final_norm = torch.sqrt(final_norm)
     final_norm /= final_norm.sum()
 
+    # norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
+    # norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
+    # scores = norms_q * norms_k
+
     topk = torch.topk(final_norm, k=rank // 2).indices
-    Sk_mask = torch.cat((topk, topk + rank // 2))
-
-    Sk = torch.eye(head_dims, device=d2, dtype=dtype_p)[:, Sk_mask]
-
-    new_Q_head = Q_head.T @ Sk
-    new_K_head = K_head.T @ Sk
-    new_Q_head = new_Q_head.T
-    new_K_head = new_K_head.T
+    Sk_mask = torch.cat((topk, topk + (head_dims // 2)))
     
-    # new_Q_head = Q_head[Sk_mask].to(Q_head).to(device="cpu", dtype=torch.float16)
-    # new_K_head = K_head[Sk_mask].to(K_head).to(device="cpu", dtype=torch.float16)
+    print(f"Sk_mask = {Sk_mask}")
+    
+    # Sk = torch.eye(head_dims, device=d2, dtype=dtype_p)[:, Sk_mask]
+    # new_Q_head = Q_head.T @ Sk
+    # new_K_head = K_head.T @ Sk
+    # new_Q_head = new_Q_head.T
+    # new_K_head = new_K_head.T
+    
+    scale = (1 / torch.sqrt(torch.Tensor([1] * len(topk)))).reshape(-1, 1)
+    scale = torch.cat((scale, scale), 0)
+    scale = scale.to(Q_head)
+    
+    new_Q_head = scale * Q_head[Sk_mask,: ]
+    new_K_head = scale * K_head[Sk_mask, :]
+    
+    new_Q_head = new_Q_head.to(K_head).to(device="cpu", dtype=torch.float16)
+    new_K_head = new_K_head.to(K_head).to(device="cpu", dtype=torch.float16)
 
     return new_Q_head, new_K_head, Sk_mask
 

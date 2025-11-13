@@ -14,6 +14,8 @@ from eval import compute_perplexity, load_calibration_texts, load_eval_texts
 from model_utils import load_model, reload_compressed_model, save_compressed_model, save_model
 from patchers.patch import patch_config
 
+
+
 logger = logging.getLogger("MoDeGPT")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -152,8 +154,15 @@ def main():
     del cov_q
     del cov_x
     torch.cuda.empty_cache()
-    model, tokenizer = reload_compressed_model(args.output_dir, device=0)
+    import gc
+    gc.collect()
+    model = "i hope this deletes it really"
+    gc.collect()
+    model, tokenizer = reload_compressed_model(args.output_dir, device="cuda:1")
 
+    eval_texts = load_eval_texts(
+        args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
+    )
     # if slice_vo_qk:
     #     from compression_utils import patch_OPT
 

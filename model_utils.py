@@ -12,14 +12,14 @@ precision to use for nearly all operations
  - qk compression uses less memory, will ignore this and use f64
  - vo may too
 """
-dtype_p = torch.float64
+dtype_p = torch.float32
 
 """
 True if we will be using multiple gpu's to compress
  - Inference/calibration will not be performed in parallel (though could be done)
  - Weights will be compressed on the 2nd gpu, while the first GPU holds the entire model
 """
-parallel = False
+parallel = True
 d1 = "cuda:0"
 d2 = "cuda:1" if parallel else "cuda:0"
 calib_device = "cuda:1" if parallel else "cuda:0"
@@ -127,7 +127,7 @@ def save_compressed_model(
     logger.info(f"✔ Model, tokenizer, and tokenizer_source.txt saved to {save_dir}")
 
 
-def reload_compressed_model(model_dir: str, device: int = 0):
+def reload_compressed_model(model_dir: str, device="cuda:0"):
     logger.info(f"Reloading compressed model from: {model_dir}")
     tokenizer_source_path = os.path.join(model_dir, "tokenizer_source.txt")
 
@@ -145,8 +145,8 @@ def reload_compressed_model(model_dir: str, device: int = 0):
     model = AutoModelForCausalLM.from_pretrained(
         model_dir, torch_dtype=torch.float16, low_cpu_mem_usage=True, trust_remote_code=True
     )
-    model.to(f"cuda:{device}")
-    logger.info(f"✔ Reloaded compressed model to cuda:{device} successfully.")
+    model.to(device)
+    logger.info(f"✔ Reloaded compressed model to {device} successfully.")
 
     model.eval()
     return model, tokenizer

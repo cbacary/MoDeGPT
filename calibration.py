@@ -173,29 +173,41 @@ def __calibrate_model(
             #         llama_pre_gate_hook(i, cov_mlp_list, logger)
             #     )
             # )
-            handles.append(
-                block.self_attn.register_forward_hook(
-                    make_llama_attn_hook(
-                        layer_idx=i,
-                        cov_q_list=cov_q_list,
-                        cov_k_list=cov_k_list,
-                        logger=logger,
-                    ),
-                    with_kwargs=True,
-                )
-            )
             # handles.append(
-            #     block.self_attn.k_proj.register_forward_hook(
-            #         _make_proj_hook(
+            #     block.self_attn.register_forward_hook(
+            #         make_llama_attn_hook(
             #             layer_idx=i,
-            #             cov_list=cov_k_list,
-            #             n_heads=n_heads,
-            #             head_dim=head_dim,
-            #             d_model=d_model,
+            #             cov_q_list=cov_q_list,
+            #             cov_k_list=cov_k_list,
             #             logger=logger,
-            #         )
+            #         ),
+            #         with_kwargs=True,
             #     )
             # )
+            handles.append(
+                block.self_attn.k_proj.register_forward_hook(
+                    _make_proj_hook(
+                        layer_idx=i,
+                        cov_list=cov_k_list,
+                        n_heads=n_heads,
+                        head_dim=head_dim,
+                        d_model=d_model,
+                        logger=logger,
+                    )
+                )
+            )
+            handles.append(
+                block.self_attn.q_proj.register_forward_hook(
+                    _make_proj_hook(
+                        layer_idx=i,
+                        cov_list=cov_k_list,
+                        n_heads=n_heads,
+                        head_dim=head_dim,
+                        d_model=d_model,
+                        logger=logger,
+                    )
+                )
+            )
 
     model.eval()
     n_texts = 0
@@ -226,9 +238,9 @@ def __calibrate_model(
     for layer in range(n_layers):
         bi_scores[layer] /= n_texts
         cov_x_list[layer] /= n_texts  # i dont think this matters but its here anyway
-        for h in range(n_heads):
-            cov_q_list[layer][h] /= n_texts
-            cov_k_list[layer][h] /= n_texts
+        # for h in range(n_heads):
+        #     cov_q_list[layer][h] /= n_texts
+        #     cov_k_list[layer][h] /= n_texts
 
     if logger:
         logger.info("Finished calibration and computed BI scores.")
@@ -258,27 +270,6 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
         cov_mlp_list[layer_idx] += (H.T @ H).to(device=calib_device)
 
     return hook
-
-
-@torch.no_grad()
-def _make_attn_hook(layer_idx, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger=None):
-    def hook(module, inp, out):
-        try:
-            out = out.detach().to(dtype=dtype_p, device=calib_device)
-            q_block, k_block, _ = out.split(d_model, dim=2)
-            Q = q_block.view(-1, d_model)
-            K = k_block.view(-1, d_model)
-            for h in range(n_heads):
-                q_h = Q[:, h * head_dim : (h + 1) * head_dim]
-                k_h = K[:, h * head_dim : (h + 1) * head_dim]
-                cov_q_list[layer_idx][h] += q_h.T @ q_h
-                cov_k_list[layer_idx][h] += k_h.T @ k_h
-        except Exception as e:
-            if logger:
-                logger.warning(f"[Hook] Attn split failed at layer {layer_idx}: {e}")
-
-    return hook
-
 
 @torch.no_grad()
 def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
@@ -326,7 +317,6 @@ def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
         query_states = query_states.permute(1, 0, 2).to(dtype=dtype_p)
         key_states = key_states.permute(1, 0, 2).to(dtype=dtype_p)
         # qk: [n_heads, B*T, head_dims]
-        print("got the fixed thing")
 
         # [n_heads, head_dims, B*T] @ [n_heads, B*T, head_dims]
         # = [n_heads, head_dims, head_dims]
@@ -339,10 +329,12 @@ def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
             cov_q_list[layer_idx][count] += cov_q_h
             cov_k_list[layer_idx][count] += cov_k_h
             
-            if (~torch.isfinite(cov_q_h)).any():
+            if not torch.isfinite(cov_q_h).any():
                 print(f"cov_q_h at {layer_idx} head {count} has nan/inf")
-            if (~torch.isfinite(cov_k_h)).any():
+                raise Exception("not good q")
+            if not torch.isfinite(cov_k_h).any():
                 print(f"cov_k_h at {layer_idx} head {count} has nan/inf")
+                raise Exception("not good k")
 
         del module.roped_query_states
         del module.roped_key_states
@@ -355,10 +347,14 @@ def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None
     def hook(module: torch.nn.Linear, inp, out):
         proj_out = out.detach().to(dtype=dtype_p, device="cuda")  # [B,T, d_model]
         proj = proj_out.view(-1, d_model)  # [B*T, d_model]
-        C_proj = proj.T @ proj
-        C_proj = C_proj
+        proj = proj_out.view(-1, n_heads, head_dim) # [B*T, n_heads, head_dim]
+        proj = proj.permute(1, 0, 2) # [n_heads, B*T, head_dim]
+        C_proj = torch.bmm(proj.transpose(1,2), proj).to(calib_device) # [n_heads, head_dim, head_dim]
+        # C_proj = proj.T @ proj
+        # C_proj = C_proj
         for h in range(n_heads):
-            h_proj = C_proj[h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim]
-            cov_list[layer_idx][h] += h_proj.to(device=calib_device)
+            cov_list[layer_idx][h] += C_proj[h, :, :]
+            # h_proj = C_proj[h * head_dim : (h + 1) * head_dim, h * head_dim : (h + 1) * head_dim]
+            # cov_list[layer_idx][h] += h_proj.to(device=calib_device)
 
     return hook

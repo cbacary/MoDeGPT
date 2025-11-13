@@ -24,6 +24,10 @@ def compress_vo(
         keep_ratio = keep_ratios[layer]
         rank_i = int(head_dim * keep_ratio)
         rank_i = max(1, rank_i)
+        
+        if arch == "llama":
+            rank_i = rank_i - (rank_i % 2)
+            
 
         C = cov[layer].to(device=d2)
         C += ridge_lambda * torch.eye(C.shape[0], device=C.device, dtype=dtype_p)
@@ -82,7 +86,6 @@ def compress_head(
     new_heads_O: list[Tensor],
     slice_dims=True,
 ) -> tuple[Tensor, Tensor]:
-    rank_i = rank_i - (rank_i % 2)
     # head_start_idx, head_end_idx
     head_s, head_e = head_idx * head_dim, (head_idx + 1) * head_dim
     # head_dims = head_dims, d_model = hidden dimensions
