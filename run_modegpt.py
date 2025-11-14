@@ -117,7 +117,7 @@ def main():
                 cov=(cov_q, cov_k),
                 keep_ratios=layer_keep_ratios,
                 ridge_lambda=ridge_lambda,
-                slice_dims=slice_vo_qk,
+                slice_dims=False,
             )
 
     if "vo" not in skip:
@@ -126,7 +126,7 @@ def main():
             cov=cov_x,
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=slice_vo_qk,
+            slice_dims=False,
         )
 
     patch_config(model)
@@ -158,7 +158,7 @@ def main():
     gc.collect()
     model = "i hope this deletes it really"
     gc.collect()
-    model, tokenizer = reload_compressed_model(args.output_dir, device="cuda:1")
+    model, tokenizer = reload_compressed_model(args.output_dir, device="cuda")
 
     eval_texts = load_eval_texts(
         args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
@@ -172,8 +172,7 @@ def main():
     # eval_texts = load_eval_texts(
     #     args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
     # )
-    model.to(device="cuda:0")
-    compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, device=0)
+    compressed_ppl = compute_perplexity(model, tokenizer, eval_texts)
     logger.info(f"Compressed model perplexity on WikiText2: {compressed_ppl:.2f}")
 
 

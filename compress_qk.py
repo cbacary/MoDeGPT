@@ -220,8 +220,11 @@ def compress_qk(
 
             if arch == "llama":
                 new_Q_head, new_K_head, rotary_mask_head = compress_head_llama(
-                    sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i
+                    sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i, slice_dims=slice_dims
                 )
+                if not slice_dims:
+                    W_q.data[h_start:h_end].copy_(new_Q_head.to(W_q))
+                    W_k.data[h_start:h_end].copy_(new_K_head.to(W_k))
                 layer_rotary_mask.append(rotary_mask_head)
             elif arch == "opt":
                 new_Q_head, new_K_head, qb_h, kb_h = compress_head_opt(
@@ -236,7 +239,7 @@ def compress_qk(
             new_K_heads.append(new_K_head)
         ####
 
-        if arch == "llama":
+        if arch == "llama" and slice_dims:
 
             # layer_rotary_mask     [n_heads * new_head_dims] (unfolded)
             # .reshape(n_heads, -1) [n_heads, new_head_dims]
@@ -254,34 +257,39 @@ def compress_qk(
 
             # final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
 
-        slice_QK_dims(
-            model=model,
-            layer_idx=i,
-            new_heads_Q=new_Q_heads,
-            new_heads_K=new_K_heads,
-            new_bias_Q=bias_Q_heads,
-            new_bias_K=bias_K_heads,
-            bias=bias,
-        )
+        if slice_dims:
+            slice_QK_dims(
+                model=model,
+                layer_idx=i,
+                new_heads_Q=new_Q_heads,
+                new_heads_K=new_K_heads,
+                new_bias_Q=bias_Q_heads,
+                new_bias_K=bias_K_heads,
+                bias=bias,
+            )
+
 
         if logger:
             logger.info(
                 f"[QK] ✅ Layer {i}: compressed to rank {rank_i} per head (CR-score + interpolation)"
             )
 
+    if not slice_dims:
+        rotary_masks = None
     return rotary_masks
     # except Exception as e:
     #     if logger:
     #         logger.error("Error: %s", e, exc_info=True)
     #         logger.warning(f"[QK] Compression failed at layer {i}: {e}")
 
-
+@torch.no_grad()
 def compress_head_llama(
     sqrt_C_q: Tensor,
     sqrt_C_k: Tensor,
     Q_head: Tensor,
     K_head: Tensor,
     rank: int,
+    slice_dims=True,
 ):
     
     """
@@ -298,8 +306,8 @@ def compress_head_llama(
     normed_k_r2 = torch.norm(sqrt_C_k[..., head_dims // 2 :], dim=0)  # norm for key rotary half 2
 
     final_norm = normed_q_r1**2 * normed_k_r1**2 + normed_q_r2**2 * normed_k_r2**2
-    final_norm = torch.sqrt(final_norm)
-    final_norm /= final_norm.sum()
+    # final_norm = torch.sqrt(final_norm)
+    # final_norm /= final_norm.sum()
 
     # norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
     # norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
@@ -308,23 +316,23 @@ def compress_head_llama(
     topk = torch.topk(final_norm, k=rank // 2).indices
     Sk_mask = torch.cat((topk, topk + (head_dims // 2)))
     
-    print(f"Sk_mask = {Sk_mask}")
-    
     # Sk = torch.eye(head_dims, device=d2, dtype=dtype_p)[:, Sk_mask]
     # new_Q_head = Q_head.T @ Sk
     # new_K_head = K_head.T @ Sk
     # new_Q_head = new_Q_head.T
     # new_K_head = new_K_head.T
-    
-    scale = (1 / torch.sqrt(torch.Tensor([1] * len(topk)))).reshape(-1, 1)
-    scale = torch.cat((scale, scale), 0)
-    scale = scale.to(Q_head)
-    
-    new_Q_head = scale * Q_head[Sk_mask,: ]
-    new_K_head = scale * K_head[Sk_mask, :]
-    
-    new_Q_head = new_Q_head.to(K_head).to(device="cpu", dtype=torch.float16)
-    new_K_head = new_K_head.to(K_head).to(device="cpu", dtype=torch.float16)
+   
+    if not slice_dims:
+        new_Q_head = torch.zeros_like(Q_head).to(Q_head)
+        new_K_head = torch.zeros_like(K_head).to(K_head)
+        new_Q_head[Sk_mask, :] = Q_head[Sk_mask, :]
+        new_K_head[Sk_mask, :] = K_head[Sk_mask, :]
+    else:
+        new_Q_head = Q_head[Sk_mask,: ]
+        new_K_head = K_head[Sk_mask, :]
+        
+    new_Q_head = new_Q_head.to(device="cpu", dtype=torch.float16)
+    new_K_head = new_K_head.to(device="cpu", dtype=torch.float16)
 
     return new_Q_head, new_K_head, Sk_mask
 

@@ -154,8 +154,8 @@ def apply_rotary_pos_emb(
     # print(f"q.shape = {q.shape}, k.shape = {k.shape}")
     # print(f"rotary_mask.numel() = {rotary_mask.numel()}")
     # print(rotary_mask)
-    if rotary_mask is None:
-        print(f"rotary_mask is empty")
+    # if rotary_mask is None:
+        # print(f"rotary_mask is empty")
 
     seq_len = cos.shape[1]
     # print(f"seq_len = {seq_len}, n_heads = {n_heads}, head_dims = {head_dims}")

@@ -73,6 +73,7 @@ def compress_vo(
             )
 
 
+@torch.no_grad()
 def compress_head(
     head_idx: int,
     head_dim: int,

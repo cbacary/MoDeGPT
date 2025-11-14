@@ -12,14 +12,14 @@ precision to use for nearly all operations
  - qk compression uses less memory, will ignore this and use f64
  - vo may too
 """
-dtype_p = torch.float32
+dtype_p = torch.float64
 
 """
 True if we will be using multiple gpu's to compress
  - Inference/calibration will not be performed in parallel (though could be done)
  - Weights will be compressed on the 2nd gpu, while the first GPU holds the entire model
 """
-parallel = True
+parallel = False
 d1 = "cuda:0"
 d2 = "cuda:1" if parallel else "cuda:0"
 calib_device = "cuda:1" if parallel else "cuda:0"
