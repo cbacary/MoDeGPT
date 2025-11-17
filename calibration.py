@@ -142,18 +142,9 @@ def __calibrate_model(
     handles = []
     # mlp_weights: list[torch.nn.Linear] = []
     for i, block in enumerate(transformer_blocks):
-        if arch == "gpt":
-            handles.append(
-                block.mlp.c_fc.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger))
-            )
-            handles.append(
-                block.attn.c_attn.register_forward_hook(
-                    _make_attn_hook(i, cov_q_list, cov_k_list, d_model, n_heads, head_dim, logger)
-                )
-            )
-        elif arch == "opt":
+        if arch == "opt":
             # mlp_weights.append((block.fc1, block.activation_fn))
-            handles.append(block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger)))
+            # handles.append(block.fc1.register_forward_hook(_make_fc_hook(i, cov_mlp_list, logger)))
             handles.append(
                 block.self_attn.q_proj.register_forward_hook(
                     _make_proj_hook(i, cov_q_list, n_heads, head_dim, d_model, logger)
@@ -185,6 +176,18 @@ def __calibrate_model(
             #     )
             # )
             handles.append(
+                block.input_layernorm.register_forward_hook(
+                    input_hook(
+                        layer_idx=i,
+                        cov_list=cov_x_list,
+                        n_heads=n_heads,
+                        head_dim=head_dim,
+                        d_model=d_model,
+                        logger=logger,
+                    )
+                )
+            )
+            handles.append(
                 block.self_attn.k_proj.register_forward_hook(
                     _make_proj_hook(
                         layer_idx=i,
@@ -200,7 +203,7 @@ def __calibrate_model(
                 block.self_attn.q_proj.register_forward_hook(
                     _make_proj_hook(
                         layer_idx=i,
-                        cov_list=cov_k_list,
+                        cov_list=cov_q_list,
                         n_heads=n_heads,
                         head_dim=head_dim,
                         d_model=d_model,
@@ -226,7 +229,8 @@ def __calibrate_model(
             bi_scores[l] += (
                 torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0).mean().item()
             )
-            cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device=calib_device)
+            if arch == "opt":
+                cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device=calib_device)
 
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
     #####
@@ -234,10 +238,10 @@ def __calibrate_model(
     for h in handles:
         h.remove()
 
-    # cov_mlp_list[i] /= n_tokens
     for layer in range(n_layers):
         bi_scores[layer] /= n_texts
-        cov_x_list[layer] /= n_texts  # i dont think this matters but its here anyway
+        cov_x_list[layer] /= n_texts
+        # cov_mlp_list[i] /= n_tokens
         # for h in range(n_heads):
         #     cov_q_list[layer][h] /= n_texts
         #     cov_k_list[layer][h] /= n_texts
@@ -341,6 +345,14 @@ def make_llama_attn_hook(layer_idx, cov_q_list, cov_k_list, logger=None):
 
     return hook
 
+
+@torch.no_grad()
+def input_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):
+    def hook(module: torch.nn.Linear, inp, out):
+        proj_out = out.detach().to(dtype=dtype_p, device="cuda")  # [B,T, d_model]
+        cov_list[layer_idx] += torch.sum(proj_out.mT @ proj_out, dim=0).to(device=calib_device)
+
+    return hook
 
 @torch.no_grad()
 def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):

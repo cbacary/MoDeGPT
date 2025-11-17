@@ -30,7 +30,7 @@ def sqrt_M(M: Tensor, ridge_lambda=1e-4) -> Tensor:
         # sqrt_C = torch.from_numpy(sqrt_C_np).to(dtype=torch.float32, device="cuda")
     """
 
-    M_reg = M + torch.eye(M.shape[0], device=M.device) * ridge_lambda
+    M_reg = M + torch.eye(M.shape[0], device=M.device, dtype=M.dtype) * ridge_lambda
     eigenvalues, eigenvectors = torch.linalg.eigh(M_reg)
     sqrt_eigenvalues = torch.sqrt(eigenvalues.clamp(min=0))
     sqrt_M: Tensor = eigenvectors @ torch.diag(sqrt_eigenvalues) @ eigenvectors.T
@@ -98,6 +98,8 @@ def slice_VO_dims(
     new_heads_O: list[torch.Tensor],
     bias: bool,
 ):
+    # v_proj nn.Linear(hidden, compressed)
+    # new_heads_V: [n_heads, compressed, hidden]
     block = get_layer_block(model, layer_idx)
     self_attn = block.self_attn
 

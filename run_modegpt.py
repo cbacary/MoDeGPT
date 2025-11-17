@@ -109,7 +109,7 @@ def main():
                 cov_x=cov_x,
                 keep_ratios=layer_keep_ratios,
                 ridge_lambda=ridge_lambda,
-                slice_dims=True,
+                slice_dims=slice_vo_qk,
             )
         else:
             rotary_masks = compress_qk(
@@ -117,7 +117,7 @@ def main():
                 cov=(cov_q, cov_k),
                 keep_ratios=layer_keep_ratios,
                 ridge_lambda=ridge_lambda,
-                slice_dims=False,
+                slice_dims=slice_vo_qk,
             )
 
     if "vo" not in skip:
@@ -126,7 +126,7 @@ def main():
             cov=cov_x,
             keep_ratios=layer_keep_ratios,
             ridge_lambda=ridge_lambda,
-            slice_dims=False,
+            slice_dims=slice_vo_qk,
         )
 
     patch_config(model)

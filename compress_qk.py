@@ -112,15 +112,15 @@ def compress_qk_svd(
 
             scale = alpha * torch.diag_embed(torch.reciprocal(s_p[:rank_i]))  #
             # scale = 1 / alpha * torch.diag_embed(torch.reciprocal(s_p[:rank_i])) # makes scale too small, bias goes to 0
-            print(f"alpha = {alpha}")
-            print(f"scale.mean() = {scale.mean()}")
+            # print(f"alpha = {alpha}")
+            # print(f"scale.mean() = {scale.mean()}")
             # print(f"scale.shape = {scale.shape}")
             # print(f"u_p.shape = {u_p.shape}")
             # print(f"v_p.shape = {v_p.shape}")
             # [rank_i, rank_i] @ [rank_i, d_model] @ [d_model, rank_i]
             new_bias_Q: Tensor = scale @ v_p[:, :rank_i].T @ K_head.T @ Q_head_bias
-            print(f"old_bias_Q.mean = {Q_head_bias.mean(dim=0)}")
-            print(f"new_bias_Q.mean = {new_bias_Q.mean(dim=0)}")
+            # print(f"old_bias_Q.mean = {Q_head_bias.mean(dim=0)}")
+            # print(f"new_bias_Q.mean = {new_bias_Q.mean(dim=0)}")
 
             # new_bias_Q = (torch.pinverse(Q.T) @ Q_head.T @ Q_head_bias.view(-1, 1)).view(-1) # also makes bias go to zero
             new_bias_K = (torch.pinverse(K.T) @ K_head.T @ K_head_bias.view(-1, 1)).view(
@@ -148,7 +148,7 @@ def compress_qk_svd(
             new_heads_K=new_K_heads,
             new_bias_Q=bias_Q_heads,
             new_bias_K=bias_K_heads,
-            bias=True,
+            bias=False,
         )
 
         if logger:

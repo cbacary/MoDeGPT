@@ -19,6 +19,7 @@ def compress_vo(
     ridge_lambda=1e-4,
     slice_dims=True,
 ):
+    ridge_lambda = 1
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
     for layer in range(n_layers):
         keep_ratio = keep_ratios[layer]
@@ -34,6 +35,8 @@ def compress_vo(
         sqrt_C = sqrt_M(C)
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
+        if torch.isnan(inv_sqrt_C).any() or torch.isinf(inv_sqrt_C).any():
+            print(f"compressed_v has Nan/Inf")
         try:
             W_v, W_o = get_V_O_weights(model=model, layer_idx=layer)
         except Exception as e:
@@ -56,6 +59,7 @@ def compress_vo(
                 new_heads_V=new_heads_V,
                 new_heads_O=new_heads_O,
                 slice_dims=slice_dims,
+                arch=arch
             )
 
         if slice_dims:
@@ -64,7 +68,7 @@ def compress_vo(
                 layer_idx=layer,
                 new_heads_V=new_heads_V,
                 new_heads_O=new_heads_O,
-                bias=True,
+                bias=True if arch == "opt" else False,
             )
 
         if logger:
@@ -86,7 +90,8 @@ def compress_head(
     new_heads_V: list[Tensor],
     new_heads_O: list[Tensor],
     slice_dims=True,
-) -> tuple[Tensor, Tensor]:
+    arch="opt",
+):
     # head_start_idx, head_end_idx
     head_s, head_e = head_idx * head_dim, (head_idx + 1) * head_dim
     # head_dims = head_dims, d_model = hidden dimensions
@@ -116,12 +121,17 @@ def compress_head(
     # [d_model, d_model] @ [d_model, head_dims] @ [head_dims, d_model] =
     # = [d_model, head_dims] @ [head_dims, head_dims] =
     # = [d_model, head_dims]
-    compressed_v = (inv_sqrt_C @ U @ U_p)[:, :rank_i]
+    compressed_v: Tensor = (inv_sqrt_C @ U @ U_p)[:, :rank_i]
     # [d_model, d_model] @ [d_model, d_model]
-    compressed_o = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
-
+    compressed_o: Tensor = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
+    
     # compressed_v = compressed_v.T
     # compressed_o = compressed_o.T
+
+    if torch.isnan(compressed_v).any() or torch.isinf(compressed_v).any():
+        print(f"compressed_v has Nan/Inf")
+    if torch.isnan(compressed_o).any() or torch.isinf(compressed_o).any():
+        print(f"compressed_o has Nan/Inf")
 
     if slice_dims:
         new_heads_V.append(compressed_v.T)
