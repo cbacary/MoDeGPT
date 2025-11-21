@@ -151,6 +151,12 @@ def reload_compressed_model(model_dir: str, device="cuda:0"):
     model.eval()
     return model, tokenizer
 
+def num_kv_heads(model):
+    config = model.config
+    if config.model_type == "llama":
+        return config.num_key_value_heads
+    else:
+        return config.num_attention_heads
 
 def get_model_attrs(model):
     """

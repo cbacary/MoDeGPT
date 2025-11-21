@@ -100,12 +100,10 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
     if max_length is None or max_length > 4096:
         max_length = 2048
 
-    print(len(texts))
     for count, batch in enumerate(texts):
         inputs = tokenizer(
             batch, return_tensors="pt", padding=True, truncation=True, max_length=2048
         ).to(device="cuda")
-        print(f"inputs['input_ids'].shape = {inputs['input_ids'].shape}")
         outputs = model(**inputs, labels=inputs["input_ids"])
         loss = outputs.loss
 
@@ -117,7 +115,6 @@ def compute_perplexity(model, tokenizer, texts, device="cuda"):
             continue
 
         num_tokens = inputs["attention_mask"].sum().item()
-        print(num_tokens)
         total_tokens += num_tokens
         total_loss += loss.item() * num_tokens
 

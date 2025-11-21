@@ -341,9 +341,6 @@ class LlamaAttention(nn.Module):
             query_states, key_states, cos, sin, rotary_mask=self.layer_rotary_mask
         )
 
-        self.roped_query_states = query_states
-        self.roped_key_states = key_states
-
         if past_key_values is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}

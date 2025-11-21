@@ -7,7 +7,7 @@ import torch
 from torch.types import Tensor
 
 from compression_utils import slice_QK_dims, sqrt_M
-from model_utils import get_model_attrs, dtype_p, d1, d2
+from model_utils import get_model_attrs, num_kv_heads, dtype_p, d1, d2
 from patchers.LlamaRebuild import LlamaForCausalLM
 
 logger = logging.getLogger("MoDeGPT")
@@ -170,6 +170,7 @@ def compress_qk(
     cov_q_list, cov_k_list = cov  # List[List[Tensor]] for Q and K respectively
 
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
+    n_kv_heads = num_kv_heads()
 
     rotary_masks = []
     for i in range(n_layers):
@@ -180,94 +181,17 @@ def compress_qk(
 
         if arch == "llama":
             rank_i = rank_i - (rank_i % 2)
+            rank_i = max(2, min(rank_i, head_dim))
 
-        if arch == "opt":
-            block = model.model.decoder.layers[i]  # OPT
-            W_q = block.self_attn.q_proj.weight
-            W_k = block.self_attn.k_proj.weight
-            bias_q = block.self_attn.q_proj.bias
-            bias_k = block.self_attn.k_proj.bias
-            bias = True
-        elif arch == "llama":
-            block = model.model.layers[i]  # LLaMA
-            W_q = block.self_attn.q_proj.weight
-            W_k = block.self_attn.k_proj.weight
-            bias = False
-
-        new_Q_heads = []
-        new_K_heads = []
-        bias_Q_heads = []
-        bias_K_heads = []
-        layer_rotary_mask = []
-        for h in range(n_heads):
-            h_start = h * head_dim
-            h_end = (h + 1) * head_dim
-
-            Q_head: Tensor = W_q[h_start:h_end, :].to(device=d2, dtype=torch.float64)
-            K_head: Tensor = W_k[h_start:h_end, :].to(device=d2, dtype=torch.float64)
-            if arch == "opt":
-                Q_head_bias: Tensor = bias_q[h_start:h_end]
-                K_head_bias: Tensor = bias_k[h_start:h_end]
-
-            C_q = cov_q_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
-            C_k = cov_k_list[i][h].to(dtype=torch.float64, device=d2)  # [Hd, Hd]
-
-            # C_q += ridge_lambda * torch.eye(C_q.shape[0], device=C_q.device, dtype=C_q.dtype)
-            # C_k += ridge_lambda * torch.eye(C_k.shape[0], device=C_k.device, dtype=C_k.dtype)
-
-            sqrt_C_q = sqrt_M(C_q)
-            sqrt_C_k = sqrt_M(C_k)
-
-            if arch == "llama":
-                new_Q_head, new_K_head, rotary_mask_head = compress_head_llama(
-                    sqrt_C_q, sqrt_C_k, Q_head, K_head, rank_i, slice_dims=slice_dims
-                )
-                if not slice_dims:
-                    W_q.data[h_start:h_end].copy_(new_Q_head.to(W_q))
-                    W_k.data[h_start:h_end].copy_(new_K_head.to(W_k))
-                layer_rotary_mask.append(rotary_mask_head)
-            elif arch == "opt":
-                new_Q_head, new_K_head, qb_h, kb_h = compress_head_opt(
-                    sqrt_C_q, sqrt_C_k, Q_head, K_head, Q_head_bias, K_head_bias, rank_i
-                )
-                bias_Q_heads.append(qb_h)
-                bias_K_heads.append(kb_h)
-            else:
-                raise Exception
-
-            new_Q_heads.append(new_Q_head)
-            new_K_heads.append(new_K_head)
-        ####
-
-        if arch == "llama" and slice_dims:
-
-            # layer_rotary_mask     [n_heads * new_head_dims] (unfolded)
-            # .reshape(n_heads, -1) [n_heads, new_head_dims]
-            # .unsqueeze(0)         [1, n_heads, new_head_dims]
-            # .unsqueeze(2)         [1, n_heads, 1, new_head_dims]
-            # this is then shapes it into the applicable shape for apply_rotary_pos_emb
-            # (see comment about unsqueezing there): [batch_size, heads, seq_len, head_dim]
-            final = torch.tensor([], dtype=torch.int64, device="cuda")
-            for mask_head in layer_rotary_mask:
-                final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
-            
-            final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
-            rotary_masks.append(final)
-            # model.model.layers[i].self_attn.layer_rotary_mask = final.to(device=W_q.device)
-
-            # final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
-
-        if slice_dims:
-            slice_QK_dims(
-                model=model,
-                layer_idx=i,
-                new_heads_Q=new_Q_heads,
-                new_heads_K=new_K_heads,
-                new_bias_Q=bias_Q_heads,
-                new_bias_K=bias_K_heads,
-                bias=bias,
-            )
-
+        compress_layer(
+            model,
+            i,
+            rank_i,
+            cov_q_list=cov_q_list[i],
+            cov_k_list=cov_k_list[i],
+            rotary_masks=rotary_masks,
+            slice_dims=slice_dims,
+        )
 
         if logger:
             logger.info(
@@ -282,21 +206,204 @@ def compress_qk(
     #         logger.error("Error: %s", e, exc_info=True)
     #         logger.warning(f"[QK] Compression failed at layer {i}: {e}")
 
+
 @torch.no_grad()
-def compress_head_llama(
-    sqrt_C_q: Tensor,
-    sqrt_C_k: Tensor,
-    Q_head: Tensor,
-    K_head: Tensor,
+def compress_layer(
+    model,
+    layer_idx: int,
+    rank: int,
+    cov_q_list: list[Tensor],
+    cov_k_list: list[Tensor],
+    rotary_masks: list[Tensor],
+    slice_dims=True,
+    bias=True,
+):
+    n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
+    n_kv_heads = num_kv_heads()
+
+    if n_kv_heads != n_heads:
+        grouped = True
+
+    if arch == "opt":
+        block = model.model.decoder.layers[layer_idx]  # OPT
+        W_q = block.self_attn.q_proj.weight
+        W_k = block.self_attn.k_proj.weight
+        bias_q = block.self_attn.q_proj.bias
+        bias_k = block.self_attn.k_proj.bias
+        bias = True
+    elif arch == "llama":
+        block = model.model.layers[layer_idx]  # LLaMA
+        W_q = block.self_attn.q_proj.weight
+        W_k = block.self_attn.k_proj.weight
+        bias = False
+
+    new_Q_heads = []
+    new_K_heads = []
+    bias_Q_heads = []
+    bias_K_heads = []
+    layer_rotary_mask = []
+    Wq_heads = W_q.view(n_heads, head_dim, -1)
+    Wk_heads = W_q.view(n_kv_heads, head_dim, -1)
+    for h in range(n_kv_heads):
+        h_start = h * head_dim
+        h_end = (h + 1) * head_dim
+
+        if arch == "llama" and grouped:
+            compress_head_llama_grouped(
+                kv_head_idx=h,
+                kv_head_ratio=n_heads // n_kv_heads,
+                cov_q_layer=cov_q_list,
+                cov_k_layer=cov_k_list,
+                Wq_heads=Wq_heads,
+                Wk_heads=Wk_heads,
+                Q_heads_out=new_Q_heads,
+                K_heads_out=new_K_heads,
+                layer_rotary_mask=layer_rotary_mask,
+                rank=rank,
+            )
+        elif arch == "llama":
+            compress_head_llama(
+                cov_q_list[h],
+                cov_k_list[h],
+                Wq_heads[h],
+                Wk_heads[h],
+                rank,
+                Q_heads_out=new_Q_heads,
+                K_heads_out=new_K_heads,
+                layer_rotary_mask=layer_rotary_mask,
+                slice_dims=slice_dims,
+            )
+        elif arch == "opt":
+            Q_head_bias: Tensor = bias_q[h_start:h_end]
+            K_head_bias: Tensor = bias_k[h_start:h_end]
+            compress_head_opt(
+                C_q=cov_q_list[h],
+                C_k=cov_k_list[h],
+                Q_head=Wq_heads[h],
+                K_head=Wk_heads[h],
+                bias_Q_head=Q_head_bias,
+                bias_K_head=K_head_bias,
+                out_Q_heads=new_Q_heads,
+                out_K_heads=new_K_heads,
+                out_Q_bias=bias_Q_heads,
+                out_K_bias=bias_K_heads,
+                rank=rank,
+            )
+        else:
+            raise NotImplementedError(
+                "Most likely have to implement it compression for this model."
+            )
+    if arch == "llama" and slice_dims:
+        final = torch.tensor([], dtype=torch.int64, device="cuda")
+        for mask_head in layer_rotary_mask:
+            final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
+
+        final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
+        rotary_masks.append(final)
+
+        # layer_rotary_mask     [n_heads * new_head_dims] (unfolded)
+        # .reshape(n_heads, -1) [n_heads, new_head_dims]
+        # .unsqueeze(0)         [1, n_heads, new_head_dims]
+        # .unsqueeze(2)         [1, n_heads, 1, new_head_dims]
+        # this is then shapes it into the applicable shape for apply_rotary_pos_emb
+        # (see comment about unsqueezing there): [batch_size, heads, seq_len, head_dim]
+
+    slice_QK_dims(
+        model=model,
+        layer_idx=layer_idx,
+        new_heads_Q=new_Q_heads,
+        new_heads_K=new_K_heads,
+        new_bias_Q=bias_Q_heads,
+        new_bias_K=bias_K_heads,
+        bias=bias,
+    )
+
+
+@torch.no_grad()
+def compress_head_llama_grouped(
+    kv_head_idx: int,
+    kv_head_ratio: int,
+    cov_q_layer: list[Tensor],
+    cov_k_layer: list[Tensor],
+    Wq_heads: Tensor,
+    Wk_heads: Tensor,
+    Q_heads_out: list[Tensor],
+    K_heads_out: list[Tensor],
+    layer_rotary_mask: list[Tensor],
     rank: int,
     slice_dims=True,
 ):
-    
     """
     llama uses RoPE so its a little different than for OPT.
-
-    Each 
     """
+
+    q_head_idx = kv_head_idx * kv_head_ratio
+
+    K_head = Wk_heads[kv_head_idx]
+    Q_heads = Wq_heads[q_head_idx : q_head_idx + kv_head_ratio]
+
+    head_dims = K_head.shape[0]
+
+    group_score = torch.zeros(head_dims // 2)
+
+    sqrt_C_k = sqrt_M(cov_k_layer[kv_head_idx])
+    for cov_q_h in cov_q_layer[q_head_idx : q_head_idx + kv_head_ratio]:
+        sqrt_C_q = sqrt_M(cov_q_h)
+
+        normed_q_r1 = torch.norm(sqrt_C_q[..., : head_dims // 2], dim=0)
+        normed_q_r2 = torch.norm(sqrt_C_q[..., head_dims // 2 :], dim=0)
+        normed_k_r1 = torch.norm(sqrt_C_k[..., : head_dims // 2], dim=0)
+        normed_k_r2 = torch.norm(sqrt_C_k[..., head_dims // 2 :], dim=0)
+
+        final_norm = normed_q_r1**2 * normed_k_r1**2 + normed_q_r2**2 * normed_k_r2**2
+
+        group_score += final_norm
+
+    group_score = torch.sqrt(group_score)
+
+    topk = torch.topk(group_score, k=rank // 2).indices
+    Sk_mask = torch.cat((topk, topk + (head_dims // 2)))
+
+    if not slice_dims:
+        new_Q_heads = torch.zeros_like(Q_heads)
+        new_K_head = torch.zeros_like(K_head)
+        new_Q_heads[:, Sk_mask, :] = Q_heads[:, Sk_mask, :]
+        new_K_head[Sk_mask, :] = K_head[Sk_mask, :]
+
+    else:
+        new_Q_heads = Q_heads[:, Sk_mask, :]
+        new_K_head = K_head[Sk_mask, :]
+
+    K_heads_out.append(new_K_head)
+    for new_Q_head in new_Q_heads:
+        Q_heads_out.append(new_Q_head)
+
+    layer_rotary_mask.append(Sk_mask)
+
+    # return new_Q_head, new_K_head, Sk_mask
+
+
+@torch.no_grad()
+def compress_head_llama(
+    C_q: Tensor,
+    C_k: Tensor,
+    Q_head: Tensor,
+    K_head: Tensor,
+    Q_heads_out: list[Tensor],
+    K_heads_out: list[Tensor],
+    layer_rotary_mask: list[Tensor],
+    rank: int,
+    slice_dims=True,
+):
+    """
+    llama uses RoPE so its a little different than for OPT.
+    """
+
+    C_q = C_q.to(dtype=dtype_p, device=d2)
+    C_k = C_k.to(dtype=dtype_p, device=d2)
+
+    sqrt_C_q = sqrt_M(C_q)
+    sqrt_C_k = sqrt_M(C_k)
 
     head_dims = Q_head.shape[0]
 
@@ -306,46 +413,47 @@ def compress_head_llama(
     normed_k_r2 = torch.norm(sqrt_C_k[..., head_dims // 2 :], dim=0)  # norm for key rotary half 2
 
     final_norm = normed_q_r1**2 * normed_k_r1**2 + normed_q_r2**2 * normed_k_r2**2
-    # final_norm = torch.sqrt(final_norm)
-    # final_norm /= final_norm.sum()
-
-    # norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
-    # norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
-    # scores = norms_q * norms_k
 
     topk = torch.topk(final_norm, k=rank // 2).indices
     Sk_mask = torch.cat((topk, topk + (head_dims // 2)))
-    
-    # Sk = torch.eye(head_dims, device=d2, dtype=dtype_p)[:, Sk_mask]
-    # new_Q_head = Q_head.T @ Sk
-    # new_K_head = K_head.T @ Sk
-    # new_Q_head = new_Q_head.T
-    # new_K_head = new_K_head.T
-   
+
     if not slice_dims:
         new_Q_head = torch.zeros_like(Q_head).to(Q_head)
         new_K_head = torch.zeros_like(K_head).to(K_head)
         new_Q_head[Sk_mask, :] = Q_head[Sk_mask, :]
         new_K_head[Sk_mask, :] = K_head[Sk_mask, :]
     else:
-        new_Q_head = Q_head[Sk_mask,: ]
+        new_Q_head = Q_head[Sk_mask, :]
         new_K_head = K_head[Sk_mask, :]
-        
+
     new_Q_head = new_Q_head.to(device="cpu", dtype=torch.float16)
     new_K_head = new_K_head.to(device="cpu", dtype=torch.float16)
 
-    return new_Q_head, new_K_head, Sk_mask
+    Q_heads_out.append(new_Q_head)
+    K_heads_out.append(new_K_head)
+
+    layer_rotary_mask.append(Sk_mask)
 
 
 def compress_head_opt(
-    sqrt_C_q: Tensor,
-    sqrt_C_k: Tensor,
+    C_q: Tensor,
+    C_k: Tensor,
     Q_head: Tensor,
     K_head: Tensor,
     bias_Q_head: Tensor,
     bias_K_head: Tensor,
+    out_Q_heads: list[Tensor],
+    out_K_heads: list[Tensor],
+    out_Q_bias: list[Tensor],
+    out_K_bias: list[Tensor],
     rank: int,
 ):
+    C_q = C_q.to(dtype=dtype_p, device=d2)
+    C_k = C_k.to(dtype=dtype_p, device=d2)
+
+    sqrt_C_q = sqrt_M(C_q)
+    sqrt_C_k = sqrt_M(C_k)
+
     # symmetric matrix, dim doesnt matter
     norms_q = torch.linalg.vector_norm(sqrt_C_q, dim=0)
     norms_k = torch.linalg.vector_norm(sqrt_C_k, dim=0)
@@ -359,5 +467,9 @@ def compress_head_opt(
 
     bias_q_new = bias_Q_head[topk]
     bias_k_new = bias_K_head[topk]
+    out_Q_heads.append(Q_new)
+    out_K_heads.append(K_new)
+    out_Q_bias.append(bias_q_new)
+    out_K_bias.append(bias_k_new)
 
     return Q_new, K_new, bias_q_new, bias_k_new

@@ -291,7 +291,7 @@ def get_V_O_weights(model, layer_idx):
 def allocate_global_sparsity(
     bi_scores: list[float],
     compression_ratio: float,
-    smoothing: float = 1.0,
+    smoothing: float = 0.25,
 ):
 
     from model_utils import dtype_p
@@ -312,5 +312,7 @@ def allocate_global_sparsity(
     # phi[0] = 0.0
     for count, (bi_score, sparsity) in enumerate(zip(bi_scores, phi)):
         logger.info(f"Layer {count}: sparisty = {sparsity:.4f} (BI = {bi_score:.4f})")
+    
+    logger.info(f"Max Layer Sparsity: {phi.max().item()}, Avg = {phi.mean().item()}")
 
     return 1 - phi

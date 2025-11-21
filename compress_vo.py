@@ -19,7 +19,6 @@ def compress_vo(
     ridge_lambda=1e-4,
     slice_dims=True,
 ):
-    ridge_lambda = 1
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
     for layer in range(n_layers):
         keep_ratio = keep_ratios[layer]
@@ -28,10 +27,10 @@ def compress_vo(
         
         if arch == "llama":
             rank_i = rank_i - (rank_i % 2)
+            rank_i = max(2, rank_i)
             
 
         C = cov[layer].to(device=d2)
-        C += ridge_lambda * torch.eye(C.shape[0], device=C.device, dtype=dtype_p)
         sqrt_C = sqrt_M(C)
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
