@@ -297,16 +297,8 @@ def compress_layer(
         for mask_head in layer_rotary_mask:
             final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
 
-        final = final.reshape(n_kv_heads, -1).unsqueeze(0).unsqueeze(2)
-        print(f"final.shape = {final.shape}")
+        final = final.reshape(n_kv_heads, -1)
         rotary_masks.append(final)
-
-        # layer_rotary_mask     [n_heads * new_head_dims] (unfolded)
-        # .reshape(n_heads, -1) [n_heads, new_head_dims]
-        # .unsqueeze(0)         [1, n_heads, new_head_dims]
-        # .unsqueeze(2)         [1, n_heads, 1, new_head_dims]
-        # this is then shapes it into the applicable shape for apply_rotary_pos_emb
-        # (see comment about unsqueezing there): [batch_size, heads, seq_len, head_dim]
 
     slice_QK_dims(
         model=model,

@@ -127,7 +127,7 @@ def apply_rotary_pos_emb(
 ):
     """Applies Rotary Position Embedding to the query and key tensors.
 
-    rotary_mask of shape [1, n_heads, 1, layer_head_dims]
+    rotary_mask of shape [n_kv_heads, compressed_head_dims]
      - layer_head_dims varies by layer
 
     Args:
@@ -152,7 +152,6 @@ def apply_rotary_pos_emb(
     """
     seq_len = cos.shape[1]
 
-    ## TODO: Make this more effecient for grouped.. that should be easy just make sure it works first
     if rotary_mask is not None:
         n_heads = q.shape[1]
         n_kv_heads = k.shape[1]
@@ -163,11 +162,12 @@ def apply_rotary_pos_emb(
         cos_k = cos.unsqueeze(unsqueeze_dim).expand(-1, n_kv_heads, -1, cos.shape[-1])
         sin_k = sin.unsqueeze(unsqueeze_dim).expand(-1, n_kv_heads, -1, cos.shape[-1])
 
+        rotary_mask = rotary_mask.unsqueeze(0).unsqueeze(2)  # [1, n_kv_heads, 1, compressed_hd]
         rotary_mask = rotary_mask.expand(-1, -1, seq_len, -1)
-
-        # rotary_mask:   [1, n_kv_heads, 1, head_dim] gets interleaved too
-        # rotary_mask_q: [1, n_heads, 1, head_dim]
         rotary_mask_q = torch.repeat_interleave(rotary_mask, n_heads // n_kv_heads, dim=1)
+        # rotary_mask:   [1, n_kv_heads, seq_len, compressed_head_dim]
+        # rotary_mask_q: [1, n_heads, seq_len, head_dim]
+
         cos_q = torch.gather(cos_q, 3, rotary_mask_q.to(cos.device))
         sin_q = torch.gather(sin_q, 3, rotary_mask_q.to(sin.device))
 

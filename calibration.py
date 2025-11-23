@@ -215,22 +215,10 @@ def __calibrate_model(
             x_in: Tensor = hidden_states[l].to(dtype_p)  # [B, T, D]
             x_out = hidden_states[l + 1].to(dtype_p)  # [B, T, D]
 
-            if arch == "llama":
-                layer_norm_mod = transformer_blocks[l].input_layernorm
-
-                x_in_normed = layer_norm_mod(x_in)
-
-                bi_scores[l] += (
-                    torch.sum((1 - torch.cosine_similarity(x_in_normed, x_out, dim=2)), dim=0)
-                    .mean()
-                    .item()
-                )
-            elif arch == "opt":
-                bi_scores[l] += (
-                    torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0)
-                    .mean()
-                    .item()
-                )
+            bi_scores[l] += (
+                torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0).mean().item()
+            )
+            if arch == "opt":
                 cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device=calib_device)
 
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
