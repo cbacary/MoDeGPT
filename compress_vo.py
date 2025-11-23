@@ -6,7 +6,7 @@ import torch
 from torch.types import Tensor
 
 from compression_utils import get_V_O_weights, slice_VO_dims, sqrt_M
-from model_utils import get_model_attrs, dtype_p, d1, d2
+from model_utils import get_model_attrs, num_kv_heads, dtype_p, d1, d2
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -20,22 +20,23 @@ def compress_vo(
     slice_dims=True,
 ):
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
+    n_kv_heads = num_kv_heads(model)
+
+    grouped = n_kv_heads != n_heads
+
     for layer in range(n_layers):
         keep_ratio = keep_ratios[layer]
         rank_i = int(head_dim * keep_ratio)
         rank_i = max(1, rank_i)
-        
+
         if arch == "llama":
             rank_i = rank_i - (rank_i % 2)
             rank_i = max(2, rank_i)
-            
 
         C = cov[layer].to(device=d2)
         sqrt_C = sqrt_M(C)
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
-        if torch.isnan(inv_sqrt_C).any() or torch.isinf(inv_sqrt_C).any():
-            print(f"compressed_v has Nan/Inf")
         try:
             W_v, W_o = get_V_O_weights(model=model, layer_idx=layer)
         except Exception as e:
@@ -45,21 +46,37 @@ def compress_vo(
         new_heads_V = []
         new_heads_O = []
 
-        for h in range(n_heads):
-            compress_head(
-                head_idx=h,
-                head_dim=head_dim,
-                rank_i=rank_i,
-                layer=layer,
-                W_v=W_v,
-                W_o=W_o,
-                sqrt_C=sqrt_C,
-                inv_sqrt_C=inv_sqrt_C,
-                new_heads_V=new_heads_V,
-                new_heads_O=new_heads_O,
-                slice_dims=slice_dims,
-                arch=arch
-            )
+        for h in range(n_kv_heads):
+            if grouped:
+                compress_head_grouped(
+                    kv_head_idx=h,
+                    kv_head_ratio=n_heads // n_kv_heads,
+                    head_dim=head_dim,
+                    rank=rank_i,
+                    W_v=W_v,
+                    W_o=W_o,
+                    sqrt_C=sqrt_C,
+                    inv_sqrt_C=inv_sqrt_C,
+                    new_heads_V=new_heads_V,
+                    new_heads_O=new_heads_O,
+                    slice_dims=slice_dims,
+                    arch=arch,
+                )
+            else:
+                compress_head(
+                    head_idx=h,
+                    head_dim=head_dim,
+                    rank_i=rank_i,
+                    layer=layer,
+                    W_v=W_v,
+                    W_o=W_o,
+                    sqrt_C=sqrt_C,
+                    inv_sqrt_C=inv_sqrt_C,
+                    new_heads_V=new_heads_V,
+                    new_heads_O=new_heads_O,
+                    slice_dims=slice_dims,
+                    arch=arch,
+                )
 
         if slice_dims:
             slice_VO_dims(
@@ -77,11 +94,60 @@ def compress_vo(
 
 
 @torch.no_grad()
+def compress_head_grouped(
+    kv_head_idx: int,
+    kv_head_ratio: int,
+    head_dim: int,
+    rank: int,
+    W_v: Tensor,
+    W_o: Tensor,
+    sqrt_C: Tensor,
+    inv_sqrt_C: Tensor,
+    new_heads_V: list[Tensor],
+    new_heads_O: list[Tensor],
+    slice_dims=True,
+    arch="opt",
+):
+    # head_start_idx, head_end_idx
+    kv_head_start, kv_head_end = kv_head_idx * head_dim, (kv_head_idx + 1) * head_dim
+
+    V_head = W_v[kv_head_start:kv_head_end, :].to(dtype=dtype_p, device=d2)
+
+    U, _S, V = torch.linalg.svd(sqrt_C @ V_head.T, full_matrices=False)
+
+    S = torch.diag(_S)  # [head_dims, head_dims]
+
+    compressed_v: Tensor = inv_sqrt_C @ U[:, :rank]
+    if slice_dims:
+        new_heads_V.append(compressed_v.T)
+    else:
+        V_new = torch.zeros_like(V_head).to(dtype=W_o.dtype, device=W_o.device)
+        V_new[:rank, :] = compressed_v.T
+
+        W_v[:, kv_head_start:kv_head_end].data.copy_(V_new)
+
+    for j in range(kv_head_ratio):
+        head_idx = (kv_head_idx * kv_head_ratio) + j
+        head_s, head_e = head_idx * head_dim, (head_idx + 1) * head_dim
+
+        O_head = W_o[:, head_s:head_e].to(dtype=dtype_p, device=d2)
+
+        compressed_o = S[:rank, :rank] @ V[:rank, :] @ O_head.T
+
+        if slice_dims:
+            new_heads_O.append(compressed_o.T)
+        else:
+            O_new = torch.zeros_like(O_head).to(dtype=W_o.dtype, device=W_o.device)
+            O_new[:, :rank] = compressed_o.T
+
+            W_o[:, head_s:head_e].data.copy_(O_new)
+
+
+@torch.no_grad()
 def compress_head(
     head_idx: int,
     head_dim: int,
     rank_i: int,
-    layer: int,
     W_v: Tensor,
     W_o: Tensor,
     sqrt_C: Tensor,
@@ -123,14 +189,9 @@ def compress_head(
     compressed_v: Tensor = (inv_sqrt_C @ U @ U_p)[:, :rank_i]
     # [d_model, d_model] @ [d_model, d_model]
     compressed_o: Tensor = S_p[:rank_i, :rank_i] @ V_p[:rank_i, :]
-    
+
     # compressed_v = compressed_v.T
     # compressed_o = compressed_o.T
-
-    if torch.isnan(compressed_v).any() or torch.isinf(compressed_v).any():
-        print(f"compressed_v has Nan/Inf")
-    if torch.isnan(compressed_o).any() or torch.isinf(compressed_o).any():
-        print(f"compressed_o has Nan/Inf")
 
     if slice_dims:
         new_heads_V.append(compressed_v.T)

@@ -15,7 +15,6 @@ from model_utils import load_model, reload_compressed_model, save_compressed_mod
 from patchers.patch import patch_config
 
 
-
 logger = logging.getLogger("MoDeGPT")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -146,7 +145,6 @@ def main():
         save_dir=args.output_dir,
         source_model_name=args.model,
     )
-    
 
     del model
     del tokenizer
@@ -155,6 +153,7 @@ def main():
     del cov_x
     torch.cuda.empty_cache()
     import gc
+
     gc.collect()
     model = "i hope this deletes it really"
     gc.collect()

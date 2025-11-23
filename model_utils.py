@@ -24,9 +24,14 @@ d1 = "cuda:0"
 d2 = "cuda:1" if parallel else "cuda:0"
 calib_device = "cuda:1" if parallel else "cuda:0"
 
-def load_model(model_name: str, patched_models_dir = "./patched_models/", device: int = 0):
+
+def load_model_with_patch(model_name: str, patched_models_dir="./patched_models/", device: int = 0):
     """
-    Loads the patched version of the model. Loading of the original model should only have to 
+
+    This is no longer neccecary but im leaving it here cause 90% of the time i delete code
+    i need it 15 minutes later. so to me later, have fun re-coding this when i finally delete it.
+
+    Loads the patched version of the model. Loading of the original model should only have to
     be done once
     """
     from patchers.patch import patch_config
@@ -46,9 +51,7 @@ def load_model(model_name: str, patched_models_dir = "./patched_models/", device
     logger.info(f"Loading model from: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16,
-        low_cpu_mem_usage=True,
+        model_name, torch_dtype=torch.float16, low_cpu_mem_usage=True, device_map={"": "cuda:0"}
     )
     model.to(f"cuda:{device}")
     logger.info(f"✔ Loaded model on cuda:{device} with float16.")
@@ -74,6 +77,28 @@ def load_model(model_name: str, patched_models_dir = "./patched_models/", device
 
     model.eval()
     return model, tokenizer, model.config
+
+
+def load_model(model_name: str, device: int = 0):
+    """
+    Loads the official model.
+    """
+    logger.info(f"Loading model from: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        dtype=torch.float16,
+        low_cpu_mem_usage=True,
+    )
+    model.to(f"cuda:{device}")
+    logger.info(f"✔ Loaded model on cuda:{device} with float16.")
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        logger.info("No pad_token found. Set pad_token = eos_token.")
+
+    return model, tokenizer, model.config
+
 
 def save_model(model: torch.nn.Module, tokenizer, save_dir: str, source_model_name: str):
     """
@@ -151,12 +176,14 @@ def reload_compressed_model(model_dir: str, device="cuda:0"):
     model.eval()
     return model, tokenizer
 
+
 def num_kv_heads(model):
     config = model.config
     if config.model_type == "llama":
         return config.num_key_value_heads
     else:
         return config.num_attention_heads
+
 
 def get_model_attrs(model):
     """
@@ -172,7 +199,6 @@ def get_model_attrs(model):
     n_heads = getattr(config, "n_head", None) or getattr(config, "num_attention_heads", None)
     d_model = getattr(config, "hidden_size", None) or getattr(config, "dim", None)
     head_dim = d_model // n_heads
-    logger.info(f"n_layers={n_layers}, n_heads={n_heads}, d_model={d_model}, head_dim={head_dim}")
 
     if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
         arch = "gpt"

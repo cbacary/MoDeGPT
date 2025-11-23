@@ -144,50 +144,46 @@ def apply_rotary_pos_emb(
             k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
             cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
             the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
-        rotary_mask (`torch.Tensor | None`): 
+        rotary_mask (`torch.Tensor | None`):
             Has shape [1, n_heads, 1, layer_head_dims], where the last dimension specifies which "columns" to choose
             from the cos, sin tensors
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-
-    # print(f"q.shape = {q.shape}, k.shape = {k.shape}")
-    # print(f"rotary_mask.numel() = {rotary_mask.numel()}")
-    # print(rotary_mask)
-    # if rotary_mask is None:
-        # print(f"rotary_mask is empty")
-
     seq_len = cos.shape[1]
-    # print(f"seq_len = {seq_len}, n_heads = {n_heads}, head_dims = {head_dims}")
 
+    ## TODO: Make this more effecient for grouped.. that should be easy just make sure it works first
     if rotary_mask is not None:
-        n_heads = rotary_mask.shape[1]
-        head_dims = rotary_mask.shape[-1]
-        # print(f"original: rotary_mask.shape = {rotary_mask.shape}")
-        # print(f"original: cos.shape = {cos.shape}")
-        # print(f"original: sin.shape = {sin.shape}")
-        cos = cos.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
-        sin = sin.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
+        n_heads = q.shape[1]
+        n_kv_heads = k.shape[1]
+
+        cos_q = cos.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
+        sin_q = sin.unsqueeze(unsqueeze_dim).expand(-1, n_heads, -1, cos.shape[-1])
+
+        cos_k = cos.unsqueeze(unsqueeze_dim).expand(-1, n_kv_heads, -1, cos.shape[-1])
+        sin_k = sin.unsqueeze(unsqueeze_dim).expand(-1, n_kv_heads, -1, cos.shape[-1])
+
         rotary_mask = rotary_mask.expand(-1, -1, seq_len, -1)
-        # print(f"transformed: rotary_mask.shape = {rotary_mask.shape}")
-        # print(f"transformed: cos.shape = {cos.shape}")
-        # print(f"transformed: sin.shape = {sin.shape}")
-        cos = torch.gather(cos, 3, rotary_mask.to(cos.device))
-        sin = torch.gather(sin, 3, rotary_mask.to(sin.device))
-        # print(f"post-gather: cos.shape = {cos.shape}")
-        # print(f"post-gather: sin.shape = {sin.shape}")
+
+        # rotary_mask:   [1, n_kv_heads, 1, head_dim] gets interleaved too
+        # rotary_mask_q: [1, n_heads, 1, head_dim]
+        rotary_mask_q = torch.repeat_interleave(rotary_mask, n_heads // n_kv_heads, dim=1)
+        cos_q = torch.gather(cos_q, 3, rotary_mask_q.to(cos.device))
+        sin_q = torch.gather(sin_q, 3, rotary_mask_q.to(sin.device))
+
+        cos_k = torch.gather(cos_k, 3, rotary_mask.to(cos.device))
+        sin_k = torch.gather(sin_k, 3, rotary_mask.to(sin.device))
+
+        q_embed = (q * cos_q) + (rotate_half(q) * sin_q)
+        k_embed = (k * cos_k) + (rotate_half(k) * sin_k)
+
+        return q_embed, k_embed
     else:
-        # print(f"rotary_mask is None")
-        # print(f"before: cos.shape = {cos.shape}")
-        # print(f"before: sin.shape = {sin.shape}")
         cos = cos.unsqueeze(unsqueeze_dim)
         sin = sin.unsqueeze(unsqueeze_dim)
-        # print(f"before: cos.shape = {cos.shape}")
-        # print(f"before: sin.shape = {sin.shape}")
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
-    # print(f"q_embed.shape = {q_embed.shape}, k_embed.shape = {k_embed.shape}")
     return q_embed, k_embed
 
 
@@ -262,10 +258,12 @@ class LlamaAttention(nn.Module):
         #     config, "head_dim", config.hidden_size // config.num_attention_heads
         # )
 
-        self.compressed_qk_dims = config.qk_ranks[layer_idx]
-        self.compressed_vo_dims = config.vo_ranks[layer_idx]
+        self.compressed_q_dims = config.q_ranks[layer_idx]
+        self.compressed_k_dims = config.k_ranks[layer_idx]
+        self.compressed_v_dims = config.v_ranks[layer_idx]
+        self.compressed_o_dims = config.o_ranks[layer_idx]
 
-        self.head_dims = self.compressed_qk_dims // config.num_attention_heads
+        self.head_dims = self.compressed_q_dims // config.num_attention_heads
 
         """
         PROBLEM for 70B models: 
@@ -287,21 +285,21 @@ class LlamaAttention(nn.Module):
 
         self.q_proj = nn.Linear(
             config.hidden_size,
-            self.compressed_qk_dims,
+            self.compressed_q_dims,
             bias=config.attention_bias,
         )
         self.k_proj = nn.Linear(
             config.hidden_size,
-            self.compressed_qk_dims,
+            self.compressed_k_dims,
             bias=config.attention_bias,
         )
         self.v_proj = nn.Linear(
             config.hidden_size,
-            self.compressed_vo_dims,
+            self.compressed_v_dims,
             bias=config.attention_bias,
         )
         self.o_proj = nn.Linear(
-            self.compressed_vo_dims,
+            self.compressed_o_dims,
             config.hidden_size,
             bias=config.attention_bias,
         )
@@ -325,12 +323,9 @@ class LlamaAttention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        compressed_qk_head_dim = query_states.shape[-1] // self.num_attention_heads
-        compressed_vo_head_dim = value_states.shape[-1] // self.num_attention_heads
-
-        query_states = query_states.view((*input_shape, -1, compressed_qk_head_dim)).transpose(1, 2)
-        key_states = key_states.view((*input_shape, -1, compressed_qk_head_dim)).transpose(1, 2)
-        value_states = value_states.view((*input_shape, -1, compressed_vo_head_dim)).transpose(1, 2)
+        query_states = query_states.view((*input_shape, -1, self.head_dims)).transpose(1, 2)
+        key_states = key_states.view((*input_shape, -1, self.head_dims)).transpose(1, 2)
+        value_states = value_states.view((*input_shape, -1, self.head_dims)).transpose(1, 2)
 
         cos, sin = position_embeddings
 
@@ -338,7 +333,11 @@ class LlamaAttention(nn.Module):
         `self.layer_rotary_mask` is initialized in compress_qk as a register_buffer on self_attn
         """
         query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin, rotary_mask=self.layer_rotary_mask
+            query_states,
+            key_states,
+            cos,
+            sin,
+            rotary_mask=self.layer_rotary_mask,
         )
 
         if past_key_values is not None:
@@ -452,7 +451,9 @@ class LlamaModel(LlamaPreTrainedModel):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
             [
-                LlamaDecoderLayer(config, layer_idx, None if rotary_masks is None else rotary_masks[layer_idx])
+                LlamaDecoderLayer(
+                    config, layer_idx, None if rotary_masks is None else rotary_masks[layer_idx]
+                )
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )

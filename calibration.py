@@ -26,7 +26,7 @@ def load_calibs(
 ):
     def recursive_cast(obj, dtype, device):
         """
-        Cause i was stupid, the tensors (wrapped in many, many python arrays) 
+        Cause i was stupid, the tensors (wrapped in many, many python arrays)
         have to be recast like this. ya live ya learn
         """
         if isinstance(obj, torch.Tensor):
@@ -39,6 +39,7 @@ def load_calibs(
             return tuple(recursive_cast(elem, dtype, device) for elem in obj)
         else:
             return obj
+
     if not load_calibs_from:
         logger.info("Calibrating model...")
         cov_mlp, cov_q, cov_k, cov_x, bi_scores = __calibrate_model(
@@ -55,8 +56,6 @@ def load_calibs(
         cov_k = covs["cov_k"]
         cov_x = covs["cov_x"]
         bi_scores = covs["bi_scores"]
-        
-        
 
     if calibs_save_path:
         covs = {
@@ -106,12 +105,8 @@ def __calibrate_model(
             n_inner = transformer_block.fc1.out_features
         elif arch == "llama":
             n_inner = transformer_block.mlp.gate_proj.out_features
-            logger.info(f"n_inner = {n_inner}")
 
         return n_inner
-
-
-
 
     # store these on the cpu otherwise big boom on gpu
     cov_mlp_list = [
@@ -124,15 +119,23 @@ def __calibrate_model(
         for i in range(n_layers)
     ]
     cov_q_list = [
-        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device=calib_device) for _ in range(n_heads)]
+        [
+            torch.zeros(head_dim, head_dim, dtype=dtype_p, device=calib_device)
+            for _ in range(n_heads)
+        ]
         for _ in range(n_layers)
     ]
     cov_k_list = [
-        [torch.zeros(head_dim, head_dim, dtype=dtype_p, device=calib_device) for _ in range(n_kv_heads)]
+        [
+            torch.zeros(head_dim, head_dim, dtype=dtype_p, device=calib_device)
+            for _ in range(n_kv_heads)
+        ]
         for _ in range(n_layers)
     ]
     # correlation input for type 3 compression, with d_h x d_h shape (hidden dimension x hidden dimension)
-    cov_x_list = [torch.zeros(d_model, d_model, dtype=dtype_p, device=calib_device) for _ in range(n_layers)]
+    cov_x_list = [
+        torch.zeros(d_model, d_model, dtype=dtype_p, device=calib_device) for _ in range(n_layers)
+    ]
 
     bi_scores = [0.0 for _ in range(n_layers)]
 
@@ -212,12 +215,22 @@ def __calibrate_model(
             x_in: Tensor = hidden_states[l].to(dtype_p)  # [B, T, D]
             x_out = hidden_states[l + 1].to(dtype_p)  # [B, T, D]
 
-            # NOTE: Maybe we should be taking cos sim of normalized input
-            # ----> might be much more accurate
-            bi_scores[l] += (
-                torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0).mean().item()
-            )
-            if arch == "opt":
+            if arch == "llama":
+                layer_norm_mod = transformer_blocks[l].input_layernorm
+
+                x_in_normed = layer_norm_mod(x_in)
+
+                bi_scores[l] += (
+                    torch.sum((1 - torch.cosine_similarity(x_in_normed, x_out, dim=2)), dim=0)
+                    .mean()
+                    .item()
+                )
+            elif arch == "opt":
+                bi_scores[l] += (
+                    torch.sum((1 - torch.cosine_similarity(x_in, x_out, dim=2)), dim=0)
+                    .mean()
+                    .item()
+                )
                 cov_x_list[l] += torch.sum(x_in.mT @ x_in, dim=0).to(device=calib_device)
 
         logger.info(f"Completed {count + 1} of {len(texts)} batches")
@@ -263,6 +276,7 @@ def _make_fc_hook(layer_idx, cov_mlp_list, logger=None):
 
     return hook
 
+
 @torch.no_grad()
 def input_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):
     def hook(module: torch.nn.Linear, inp, out):
@@ -271,14 +285,17 @@ def input_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):
 
     return hook
 
+
 @torch.no_grad()
 def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model, logger=None):
     def hook(module: torch.nn.Linear, inp, out):
         proj_out = out.detach().to(dtype=dtype_p, device="cuda")  # [B,T, d_model]
         proj = proj_out.view(-1, d_model)  # [B*T, d_model]
-        proj = proj_out.view(-1, n_heads, head_dim) # [B*T, n_heads, head_dim]
-        proj = proj.permute(1, 0, 2) # [n_heads, B*T, head_dim]
-        C_proj = torch.bmm(proj.transpose(1,2), proj).to(calib_device) # [n_heads, head_dim, head_dim]
+        proj = proj_out.view(-1, n_heads, head_dim)  # [B*T, n_heads, head_dim]
+        proj = proj.permute(1, 0, 2)  # [n_heads, B*T, head_dim]
+        C_proj = torch.bmm(proj.transpose(1, 2), proj).to(
+            calib_device
+        )  # [n_heads, head_dim, head_dim]
         # C_proj = proj.T @ proj
         # C_proj = C_proj
         for h in range(n_heads):

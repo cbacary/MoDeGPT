@@ -170,7 +170,6 @@ def compress_qk(
     cov_q_list, cov_k_list = cov  # List[List[Tensor]] for Q and K respectively
 
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
-    n_kv_heads = num_kv_heads()
 
     rotary_masks = []
     for i in range(n_layers):
@@ -219,7 +218,7 @@ def compress_layer(
     bias=True,
 ):
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
-    n_kv_heads = num_kv_heads()
+    n_kv_heads = num_kv_heads(model)
 
     if n_kv_heads != n_heads:
         grouped = True
@@ -243,7 +242,7 @@ def compress_layer(
     bias_K_heads = []
     layer_rotary_mask = []
     Wq_heads = W_q.view(n_heads, head_dim, -1)
-    Wk_heads = W_q.view(n_kv_heads, head_dim, -1)
+    Wk_heads = W_k.view(n_kv_heads, head_dim, -1)
     for h in range(n_kv_heads):
         h_start = h * head_dim
         h_end = (h + 1) * head_dim
@@ -298,7 +297,8 @@ def compress_layer(
         for mask_head in layer_rotary_mask:
             final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
 
-        final = final.reshape(n_heads, -1).unsqueeze(0).unsqueeze(2)
+        final = final.reshape(n_kv_heads, -1).unsqueeze(0).unsqueeze(2)
+        print(f"final.shape = {final.shape}")
         rotary_masks.append(final)
 
         # layer_rotary_mask     [n_heads * new_head_dims] (unfolded)
@@ -344,10 +344,11 @@ def compress_head_llama_grouped(
 
     head_dims = K_head.shape[0]
 
-    group_score = torch.zeros(head_dims // 2)
+    group_score = torch.zeros(head_dims // 2).to(device=d2, dtype=dtype_p)
 
-    sqrt_C_k = sqrt_M(cov_k_layer[kv_head_idx])
+    sqrt_C_k = sqrt_M(cov_k_layer[kv_head_idx].to(device=d2, dtype=dtype_p))
     for cov_q_h in cov_q_layer[q_head_idx : q_head_idx + kv_head_ratio]:
+        cov_q_h = cov_q_h.to(device=d2, dtype=dtype_p)
         sqrt_C_q = sqrt_M(cov_q_h)
 
         normed_q_r1 = torch.norm(sqrt_C_q[..., : head_dims // 2], dim=0)
