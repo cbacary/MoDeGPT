@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--calibs_batch_size", type=int, default=4)
 
     args = parser.parse_args()
+    stride = 2048 - 512
 
     device = args.device
     logger.info(f"Loading model: {args.model}")
@@ -53,11 +54,11 @@ def main():
         args.calib_size, model, tokenizer, batch_size=int(args.calibs_batch_size)
     )
     eval_texts = load_eval_texts(
-        args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
+        args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size, stride=stride
     )
 
     logger.info("Evaluating original model (for baseline perplexity)...")
-    baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device)
+    baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device, stride=stride)
     logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
 
     cov_mlp, cov_q, cov_k, cov_x, bi_scores = load_calibs(
@@ -160,7 +161,7 @@ def main():
     model, tokenizer = reload_compressed_model(args.output_dir, device="cuda")
 
     eval_texts = load_eval_texts(
-        args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
+        args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size, stride=stride
     )
     # if slice_vo_qk:
     #     from compression_utils import patch_OPT
@@ -171,7 +172,7 @@ def main():
     # eval_texts = load_eval_texts(
     #     args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
     # )
-    compressed_ppl = compute_perplexity(model, tokenizer, eval_texts)
+    compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, stride=stride)
     logger.info(f"Compressed model perplexity on WikiText2: {compressed_ppl:.2f}")
 
 

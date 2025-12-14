@@ -220,8 +220,7 @@ def compress_layer(
     n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
     n_kv_heads = num_kv_heads(model)
 
-    if n_kv_heads != n_heads:
-        grouped = True
+    grouped = n_kv_heads != n_heads
 
     if arch == "opt":
         block = model.model.decoder.layers[layer_idx]  # OPT
@@ -266,11 +265,11 @@ def compress_layer(
                 cov_k_list[h],
                 Wq_heads[h],
                 Wk_heads[h],
-                rank,
                 Q_heads_out=new_Q_heads,
                 K_heads_out=new_K_heads,
                 layer_rotary_mask=layer_rotary_mask,
                 slice_dims=slice_dims,
+                rank=rank,
             )
         elif arch == "opt":
             Q_head_bias: Tensor = bias_q[h_start:h_end]
@@ -362,7 +361,6 @@ def compress_head_llama_grouped(
         new_K_head = torch.zeros_like(K_head)
         new_Q_heads[:, Sk_mask, :] = Q_heads[:, Sk_mask, :]
         new_K_head[Sk_mask, :] = K_head[Sk_mask, :]
-
     else:
         new_Q_heads = Q_heads[:, Sk_mask, :]
         new_K_head = K_head[Sk_mask, :]

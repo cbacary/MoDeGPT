@@ -22,6 +22,7 @@ True if we will be using multiple gpu's to compress
 parallel = False
 d1 = "cuda:0"
 d2 = "cuda:1" if parallel else "cuda:0"
+# calib_device = "cpu"
 calib_device = "cuda:1" if parallel else "cuda:0"
 
 

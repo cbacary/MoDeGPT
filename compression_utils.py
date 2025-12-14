@@ -291,7 +291,7 @@ def get_V_O_weights(model, layer_idx):
 def allocate_global_sparsity(
     bi_scores: list[float],
     compression_ratio: float,
-    smoothing: float = 0.40,
+    smoothing: float = 0.15,
 ):
     from torch.nn.functional import softmax
 

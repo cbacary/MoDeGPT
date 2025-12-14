@@ -78,7 +78,6 @@ def __calibrate_model(
     texts,
     batch_size: int,
 ):
-    print("hello from __calibrate_model")
     logger.info("Calibrating model")
     n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
     n_kv_heads = num_kv_heads(model)
@@ -204,11 +203,11 @@ def __calibrate_model(
     model.eval()
     n_texts = 0
     for count, batch in enumerate(texts):
-        n_texts += len(texts)
+        n_texts += len(batch)
         inputs = tokenizer(
             batch, return_tensors="pt", padding=True, truncation=True, max_length=2048
         ).to(device="cuda")
-        print(f"len(texts) = {len(texts)}")
+        print(f"len(batch) = {len(batch)}")
         outputs = model(**inputs, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         for l in range(n_layers):

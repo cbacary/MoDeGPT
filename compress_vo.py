@@ -67,7 +67,6 @@ def compress_vo(
                     head_idx=h,
                     head_dim=head_dim,
                     rank_i=rank_i,
-                    layer=layer,
                     W_v=W_v,
                     W_o=W_o,
                     sqrt_C=sqrt_C,
