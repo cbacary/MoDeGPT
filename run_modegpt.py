@@ -19,7 +19,7 @@ from eval import (
 from model_utils import load_model, reload_compressed_model, save_compressed_model, save_model
 from patchers.patch import patch_config
 
-ALPACA = True
+ALPACA = False
 
 logger = logging.getLogger("MoDeGPT")
 logger.setLevel(logging.INFO)
