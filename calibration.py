@@ -204,11 +204,13 @@ def __calibrate_model(
     n_texts = 0
     for count, batch in enumerate(texts):
         n_texts += len(batch)
-        inputs = tokenizer(
-            batch, return_tensors="pt", padding=True, truncation=True, max_length=2048
-        ).to(device="cuda")
-        print(f"len(batch) = {len(batch)}")
-        outputs = model(**inputs, output_hidden_states=True)
+        if isinstance(batch, torch.Tensor):
+            outputs = model(batch, output_hidden_states=True)
+        else:
+            inputs = tokenizer(
+                batch, return_tensors="pt", padding=True, truncation=True, max_length=2048
+            ).to(device="cuda")
+            outputs = model(**inputs, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         for l in range(n_layers):
             x_in: Tensor = hidden_states[l].to(dtype_p)  # [B, T, D]

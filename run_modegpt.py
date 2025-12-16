@@ -10,10 +10,16 @@ from compress_qk import compress_qk, compress_qk_svd
 from compress_mlp import compress_mlp
 from compress_vo import compress_vo
 from compression_utils import allocate_global_sparsity
-from eval import compute_perplexity, load_calibration_texts, load_eval_texts
+from eval import (
+    compute_perplexity,
+    load_calibration_texts,
+    load_eval_texts,
+    evaluate_perplexity_alpaca,
+)
 from model_utils import load_model, reload_compressed_model, save_compressed_model, save_model
 from patchers.patch import patch_config
 
+ALPACA = True
 
 logger = logging.getLogger("MoDeGPT")
 logger.setLevel(logging.INFO)
@@ -32,7 +38,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="facebook/opt-6.7b")
     parser.add_argument("--compression_ratio", type=float, default=0.5)
-    parser.add_argument("--calib_size", type=str, default="32")
+    parser.add_argument("--calib_size", type=int, default=32)
     parser.add_argument("--eval_size", type=str, default="32")
     parser.add_argument("--output_dir", type=str, default="compressed_output")
     parser.add_argument("--device", type=int, default=0)
@@ -41,6 +47,10 @@ def main():
     parser.add_argument("--load_calibs_from", type=str, default="")
     parser.add_argument("--calibs_save_path", type=str, default="")
     parser.add_argument("--calibs_batch_size", type=int, default=4)
+
+    logger.info(
+        f"ALPACA = {ALPACA} -- If True, calibrating/evaluating with Alpaca dataset else Wikitext"
+    )
 
     args = parser.parse_args()
     stride = 2048 - 512
@@ -51,15 +61,30 @@ def main():
 
     logger.info("Loading calibration and evaluation texts...")
     calib_texts = load_calibration_texts(
-        args.calib_size, model, tokenizer, batch_size=int(args.calibs_batch_size)
+        args.calib_size,
+        model,
+        tokenizer,
+        batch_size=int(args.calibs_batch_size),
+        alpaca=ALPACA,
     )
-    eval_texts = load_eval_texts(
-        args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size, stride=stride
-    )
+    if not ALPACA:
+        eval_texts = load_eval_texts(
+            args.eval_size,
+            model,
+            tokenizer,
+            batch_size=args.calibs_batch_size,
+            stride=stride,
+            alpaca=ALPACA,
+        )
 
     logger.info("Evaluating original model (for baseline perplexity)...")
-    baseline_ppl = compute_perplexity(model, tokenizer, eval_texts, device=device, stride=stride)
-    logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
+    if not ALPACA:
+        baseline_ppl = compute_perplexity(
+            model, tokenizer, eval_texts, device=device, stride=stride, alpaca=ALPACA
+        )
+        logger.info(f"Original model perplexity on WikiText2: {baseline_ppl:.2f}")
+    else:
+        baseline_ppl = evaluate_perplexity_alpaca(model, tokenizer)
 
     cov_mlp, cov_q, cov_k, cov_x, bi_scores = load_calibs(
         model,
@@ -172,8 +197,11 @@ def main():
     # eval_texts = load_eval_texts(
     #     args.eval_size, model, tokenizer, batch_size=args.calibs_batch_size
     # )
-    compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, stride=stride)
-    logger.info(f"Compressed model perplexity on WikiText2: {compressed_ppl:.2f}")
+    if not ALPACA:
+        compressed_ppl = compute_perplexity(model, tokenizer, eval_texts, stride=stride)
+    else:
+        compressed_ppl = evaluate_perplexity_alpaca(model, tokenizer)
+    logger.info(f"Original -- Compressed (PPL): {baseline_ppl} -- {compressed_ppl}")
 
 
 main()
