@@ -1,4 +1,4 @@
-MODEL_NAME="Qwen/Qwen3-8B"
+MODEL_NAME="meta-llama/Meta-Llama-3-8B"
 TESTS_OUTPUT_DIR="$TMPDIR/compressed_output/$MODEL_NAME/"
 
 export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -7,7 +7,7 @@ echo "Test 1"
 python -m src.run_modegpt \
     --model "$MODEL_NAME" \
     --device 0 \
-    --compression_ratio 0.30 \
+    --compression_ratio 0.25 \
     --calib_size 128 \
     --calibs_batch_size 16 \
     --output_dir "$TESTS_OUTPUT_DIR" \
