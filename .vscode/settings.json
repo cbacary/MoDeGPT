@@ -1,0 +1,31 @@
+{
+  // "python.defaultInterpreterPath": "/blue/sgao1/cc22bc.fsu/prog/NySVD-MoE/.fast-venv",
+  "files.watcherExclude": {
+    "**/backups/**": true,
+    "**/data/**": true,
+    "**/checkpoints/**": true,
+    "**/.conda/**": true,
+    "**/wandb/**": true,
+    "**/__pycache__/**": true,
+    "**/node_modules/**": true,
+    "./metrics/backups/**": true
+  },
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.ipynb_checkpoints": true
+  },
+  "[json]": {
+    "editor.foldingStrategy": "indentation",
+    "editor.foldingLevel": 2
+  }
+  // "emeraldwalk.runonsave": {
+  //   "commands": [
+  //     {
+  //       "match": ".*",
+  //       "notMatch": "(\\.vscode|metrics)",
+  //       "cmd": "rsync -avz --exclude '.vscode/' --exclude '.git/' --exclude '.venv/' --exclude 'compressed_output/' --exclude 'metrics/' --exclude 'logs/' --exclude 'calibs/' --exclude 'patched_models/' --exclude '*.pt' --filter=':- .gitignore' -e 'ssh -i /home/cbac/.ssh/UF_HiperGatorAccess' /home/cbac/Documents/prgTHINGS/FSUJob/ModeGPT/NySVD-MoE/ cc22bc.fsu@hpg.rc.ufl.edu:/blue/sgao1/cc22bc.fsu/prog/NySVD-MoE",
+  //       "messageAfter": "Completed transfering files"
+  //     }
+  //   ]
+  // }
+}

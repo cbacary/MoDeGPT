@@ -1,14 +1,12 @@
-# Type 2 compression
-
-
 import logging
 
 import torch
 from torch.types import Tensor
 
-from compression_utils import slice_QK_dims, sqrt_M
-from model_utils import get_model_attrs, num_kv_heads, dtype_p, d1, d2
-from patchers.LlamaRebuild import LlamaForCausalLM
+from src.compression_utils import sqrt_M
+from src.model_utils import dtype_p, d1, d2
+
+from src.adapters.model_adapter import ModelAdapter
 
 logger = logging.getLogger("MoDeGPT")
 
@@ -16,7 +14,7 @@ logger = logging.getLogger("MoDeGPT")
 #### NOTE: see OPTDecoderLayer.final_layer_norm
 @torch.no_grad()
 def compress_qk_svd(
-    model,
+    adapter: ModelAdapter,
     cov_x: list[Tensor],
     keep_ratios,
     rank=None,
@@ -26,7 +24,11 @@ def compress_qk_svd(
     """
     QK compression using SVD instead of CR decomposition -- better performance for OPT models
     """
-    n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
+    model = adapter.model
+
+    n_layers = adapter.n_layers
+    n_heads = adapter.n_heads
+    head_dim = adapter.head_dim
 
     for layer in range(n_layers):
         # try:
@@ -35,25 +37,14 @@ def compress_qk_svd(
         rank_i = max(1, min(rank_i, head_dim))
 
         C = cov_x[layer].to(device="cuda", dtype=dtype_p)
-        sqrt_C = sqrt_M(C)
+        sqrt_C = sqrt_M(C, debug="QK covs:")
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
-        try:
-            block = model.model.decoder.layers[layer]  # OPT
-            W_q = block.self_attn.q_proj.weight
-            W_k = block.self_attn.k_proj.weight
-            bias_q: Tensor = block.self_attn.q_proj.bias
-            bias_k: Tensor = block.self_attn.k_proj.bias
-        except AttributeError:
-            try:
-                block = model.transformer.h[layer]  # GPT (unsupported)
-                raise NotImplementedError("GPT packed QKV not supported in Type-II compression.")
-            except AttributeError:
-                block = model.model.layers[layer]  # LLaMA
-                W_q = block.self_attn.q_proj.weight
-                bias_q: Tensor = block.self_attn.q_proj.bias
-                W_k = block.self_attn.k_proj.weight
-                bias_k: Tensor = block.self_attn.k_proj.bias
+        qk_weights = adapter.get_qk_components(layer_idx=layer)
+        W_q: Tensor = qk_weights.query_proj.weight
+        W_k: Tensor = qk_weights.key_proj.weight
+        bias_q: Tensor = qk_weights.query_proj.bias
+        bias_k: Tensor = qk_weights.key_proj.bias
 
         new_Q_heads = []
         new_K_heads = []
@@ -160,16 +151,19 @@ def compress_qk_svd(
 #### NOTE: see OPTDecoderLayer.final_layer_norm
 @torch.no_grad()
 def compress_qk(
-    model: LlamaForCausalLM,
+    adapter: ModelAdapter,
     cov,
     keep_ratios,
     rank=None,
-    ridge_lambda=1,
     slice_dims=True,
 ):
     cov_q_list, cov_k_list = cov  # List[List[Tensor]] for Q and K respectively
 
-    n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
+    model = adapter.model
+
+    n_layers = adapter.n_layers
+    head_dim = adapter.head_dim
+    arch = adapter.arch
 
     rotary_masks = []
     for i in range(n_layers):
@@ -178,12 +172,12 @@ def compress_qk(
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
         rank_i = max(1, min(rank_i, head_dim))
 
-        if arch == "llama":
+        if arch == "llama" or "qwen" in arch:
             rank_i = rank_i - (rank_i % 2)
             rank_i = max(2, min(rank_i, head_dim))
 
         compress_layer(
-            model,
+            adapter,
             i,
             rank_i,
             cov_q_list=cov_q_list[i],
@@ -208,7 +202,7 @@ def compress_qk(
 
 @torch.no_grad()
 def compress_layer(
-    model,
+    adapter: ModelAdapter,
     layer_idx: int,
     rank: int,
     cov_q_list: list[Tensor],
@@ -217,23 +211,19 @@ def compress_layer(
     slice_dims=True,
     bias=True,
 ):
-    n_layers, n_heads, _, head_dim, arch = get_model_attrs(model)
-    n_kv_heads = num_kv_heads(model)
+
+    n_heads, head_dim, arch = adapter.n_heads, adapter.head_dim, adapter.arch
+    n_kv_heads = adapter.n_kv_heads
 
     grouped = n_kv_heads != n_heads
 
-    if arch == "opt":
-        block = model.model.decoder.layers[layer_idx]  # OPT
-        W_q = block.self_attn.q_proj.weight
-        W_k = block.self_attn.k_proj.weight
-        bias_q = block.self_attn.q_proj.bias
-        bias_k = block.self_attn.k_proj.bias
-        bias = True
-    elif arch == "llama":
-        block = model.model.layers[layer_idx]  # LLaMA
-        W_q = block.self_attn.q_proj.weight
-        W_k = block.self_attn.k_proj.weight
-        bias = False
+    qk_weights = adapter.get_qk_components(layer_idx=layer_idx)
+    W_q = qk_weights.query_proj.weight
+    W_k = qk_weights.key_proj.weight
+    bias_q = qk_weights.query_proj.bias
+    bias_k = qk_weights.key_proj.bias
+
+    bias = bias_q is not None
 
     new_Q_heads = []
     new_K_heads = []
@@ -246,7 +236,7 @@ def compress_layer(
         h_start = h * head_dim
         h_end = (h + 1) * head_dim
 
-        if arch == "llama" and grouped:
+        if (arch == "llama" or "qwen" in arch) and grouped:
             compress_head_llama_grouped(
                 kv_head_idx=h,
                 kv_head_ratio=n_heads // n_kv_heads,
@@ -258,6 +248,7 @@ def compress_layer(
                 K_heads_out=new_K_heads,
                 layer_rotary_mask=layer_rotary_mask,
                 rank=rank,
+                ridge_lambda=adapter.config.ridge_qk,
             )
         elif arch == "llama":
             compress_head_llama(
@@ -291,7 +282,7 @@ def compress_layer(
             raise NotImplementedError(
                 "Most likely have to implement it compression for this model."
             )
-    if arch == "llama" and slice_dims:
+    if (arch == "llama" or "qwen" in arch) and slice_dims:
         final = torch.tensor([], dtype=torch.int64, device="cuda")
         for mask_head in layer_rotary_mask:
             final = torch.cat((final, mask_head.to(device="cuda", dtype=torch.int64)), dim=0)
@@ -299,8 +290,7 @@ def compress_layer(
         final = final.reshape(n_kv_heads, -1)
         rotary_masks.append(final)
 
-    slice_QK_dims(
-        model=model,
+    adapter.slice_qk_dims(
         layer_idx=layer_idx,
         new_heads_Q=new_Q_heads,
         new_heads_K=new_K_heads,
@@ -323,6 +313,7 @@ def compress_head_llama_grouped(
     layer_rotary_mask: list[Tensor],
     rank: int,
     slice_dims=True,
+    ridge_lambda=1e-4,
 ):
     """
     llama uses RoPE so its a little different than for OPT.
@@ -337,7 +328,9 @@ def compress_head_llama_grouped(
 
     group_score = torch.zeros(head_dims // 2).to(device=d2, dtype=dtype_p)
 
-    sqrt_C_k = sqrt_M(cov_k_layer[kv_head_idx].to(device=d2, dtype=dtype_p))
+    sqrt_C_k = sqrt_M(
+        cov_k_layer[kv_head_idx].to(device=d2, dtype=dtype_p), ridge_lambda=ridge_lambda
+    )
     for cov_q_h in cov_q_layer[q_head_idx : q_head_idx + kv_head_ratio]:
         cov_q_h = cov_q_h.to(device=d2, dtype=dtype_p)
         sqrt_C_q = sqrt_M(cov_q_h)

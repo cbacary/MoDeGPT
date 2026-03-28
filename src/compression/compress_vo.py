@@ -1,26 +1,28 @@
-# Type 3 compression
-
 import logging
 
 import torch
 from torch.types import Tensor
 
-from compression_utils import get_V_O_weights, slice_VO_dims, sqrt_M
-from model_utils import get_model_attrs, num_kv_heads, dtype_p, d1, d2
+from src.compression_utils import sqrt_M
+from src.model_utils import dtype_p, d1, d2
+from src.adapters.model_adapter import ModelAdapter
 
 logger = logging.getLogger("MoDeGPT")
 
 
 @torch.no_grad()
 def compress_vo(
-    model,
+    adapter: ModelAdapter,
     cov: list[Tensor],
     keep_ratios=None,
-    ridge_lambda=1e-4,
     slice_dims=True,
 ):
-    n_layers, n_heads, d_model, head_dim, arch = get_model_attrs(model)
-    n_kv_heads = num_kv_heads(model)
+    model = adapter.model
+    n_layers = adapter.n_layers
+    n_heads = adapter.n_heads
+    head_dim = adapter.head_dim
+    arch = adapter.arch
+    n_kv_heads = adapter.n_kv_heads
 
     grouped = n_kv_heads != n_heads
 
@@ -29,16 +31,18 @@ def compress_vo(
         rank_i = int(head_dim * keep_ratio)
         rank_i = max(1, rank_i)
 
-        if arch == "llama":
+        if arch == "llama" or "qwen" in arch:
             rank_i = rank_i - (rank_i % 2)
             rank_i = max(2, rank_i)
 
         C = cov[layer].to(device=d2)
-        sqrt_C = sqrt_M(C)
+        sqrt_C = sqrt_M(C, ridge_lambda=adapter.config.ridge_vo, debug="Type 3 VO cov:")
         inv_sqrt_C = torch.linalg.inv(sqrt_C)
 
         try:
-            W_v, W_o = get_V_O_weights(model=model, layer_idx=layer)
+            comps = adapter.get_attn_components(layer)
+            W_v = comps.v_proj.weight
+            W_o = comps.o_proj.weight
         except Exception as e:
             logger.warning(f"[VO] Layer {layer}: cannot access v_proj/o_proj: {e}")
             continue
@@ -78,8 +82,7 @@ def compress_vo(
                 )
 
         if slice_dims:
-            slice_VO_dims(
-                model=model,
+            adapter.slice_vo_dims(
                 layer_idx=layer,
                 new_heads_V=new_heads_V,
                 new_heads_O=new_heads_O,
@@ -87,9 +90,7 @@ def compress_vo(
             )
 
         if logger:
-            logger.info(
-                f"[VO] ✅ Compressed layer {layer} to rank {rank_i} per head (λ={ridge_lambda})"
-            )
+            logger.info(f"[VO] ✅ Compressed layer {layer} to rank {rank_i} per head")
 
 
 @torch.no_grad()
@@ -174,7 +175,6 @@ def compress_head(
     S = torch.diag(_S)  # [head_dims, head_dims]
 
     A = S @ V @ O_head.T  # once again transpose O_head
-    # There is marginal difference (from minimal testing) between full_matrices=False|True
     U_p, _S_p, V_p = torch.linalg.svd(A, full_matrices=True)
 
     S_p = torch.diag(_S_p)
