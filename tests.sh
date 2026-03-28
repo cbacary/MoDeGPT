@@ -1,15 +1,13 @@
-TESTS_OUTPUT_DIR="$TMPDIR/compressed_output/Llama3-8B/"
-MODEL_DIR="/blue/sgao1/cc22bc.fsu/prog/NySVD-MoE/compressed_output_backup/model/"
+MODEL_NAME="Qwen/Qwen3-8B"
+TESTS_OUTPUT_DIR="$TMPDIR/compressed_output/$MODEL_NAME/"
 
 export HF_HUB_ENABLE_HF_TRANSFER=0
-export TRITON_CACHE_DIR="/blue/sgao1/cc22bc.fsu/triton_cache/"
-export TORCHINDUCTOR_CACHE_DIR="/blue/sgao1/cc22bc.fsu/inductor_cache/"
 
 echo "Test 1"
 python -m src.run_modegpt \
-    --model "meta-llama/Meta-Llama-3-8B" \
+    --model "$MODEL_NAME" \
     --device 0 \
-    --compression_ratio 0.25 \
+    --compression_ratio 0.30 \
     --calib_size 128 \
     --calibs_batch_size 16 \
     --output_dir "$TESTS_OUTPUT_DIR" \
@@ -17,6 +15,6 @@ python -m src.run_modegpt \
     --order "mlp,qk,vo" \
     --max_sparsity 0.8 \
     --ridge_vo 1e-4 \
-    --ridge_qk 3e-4 \
-    --sparsity_smoothing 0.071 \
+    --ridge_qk 1e-1 \
+    --sparsity_smoothing 0.0725 \
     --dataset alpaca
