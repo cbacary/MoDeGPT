@@ -12,7 +12,11 @@ class CompressionConfig:
     tokenizer_src: str = "mistralai/Mixtral-8x7B-v0.1"
     output_dir: str = "compressed_output"
 
+    temp_storage_dir: str = "./compressed_output/layers/"
+
     dataset: str = "wikitext"
+
+    nystrom_ridge: float = 1e-2
 
     order: Optional[str] = None
 

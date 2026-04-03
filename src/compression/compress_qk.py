@@ -156,7 +156,12 @@ def compress_qk(
     keep_ratios,
     rank=None,
     slice_dims=True,
+    target_layers: list[int] | None = None,
 ):
+
+    if target_layers is None:
+        target_layers = [i for i in range(adapter.n_layers)]
+
     cov_q_list, cov_k_list = cov  # List[List[Tensor]] for Q and K respectively
 
     model = adapter.model
@@ -166,7 +171,7 @@ def compress_qk(
     arch = adapter.arch
 
     rotary_masks = []
-    for i in range(n_layers):
+    for i in target_layers:
         # try:
         keep_ratio = keep_ratios[i]
         rank_i = int(head_dim * keep_ratio) if rank is None else rank
@@ -290,14 +295,26 @@ def compress_layer(
         final = final.reshape(n_kv_heads, -1)
         rotary_masks.append(final)
 
-    adapter.slice_qk_dims(
+    Q_heads = torch.cat(new_Q_heads, dim=0).to(device="cuda", dtype=torch.bfloat16)
+    K_heads = torch.cat(new_K_heads, dim=0).to(device="cuda", dtype=torch.bfloat16)
+
+    weight_cache = {"q_proj": Q_heads, "k_proj": K_heads}
+
+    adapter.save_layer(
+        output_dir=adapter.config.temp_storage_dir,
+        suffix="qk",
+        weights=weight_cache,
         layer_idx=layer_idx,
-        new_heads_Q=new_Q_heads,
-        new_heads_K=new_K_heads,
-        new_bias_Q=bias_Q_heads,
-        new_bias_K=bias_K_heads,
-        bias=bias,
     )
+
+    # adapter.slice_qk_dims(
+    #     layer_idx=layer_idx,
+    #     new_heads_Q=new_Q_heads,
+    #     new_heads_K=new_K_heads,
+    #     new_bias_Q=bias_Q_heads,
+    #     new_bias_K=bias_K_heads,
+    #     bias=bias,
+    # )
 
 
 @torch.no_grad()
@@ -410,8 +427,8 @@ def compress_head_llama(
         new_Q_head = Q_head[Sk_mask, :]
         new_K_head = K_head[Sk_mask, :]
 
-    new_Q_head = new_Q_head.to(device="cpu", dtype=torch.float16)
-    new_K_head = new_K_head.to(device="cpu", dtype=torch.float16)
+    new_Q_head = new_Q_head.to(device="cpu", dtype=torch.bfloat16)
+    new_K_head = new_K_head.to(device="cpu", dtype=torch.bfloat16)
 
     Q_heads_out.append(new_Q_head)
     K_heads_out.append(new_K_head)

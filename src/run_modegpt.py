@@ -24,7 +24,7 @@ from src.model_utils import (
 
 from src.adapters.model_adapter import ModelAdapter
 from src.adapters.CompressionConfig import CompressionConfig
-
+import gc
 import optuna
 
 logger = logging.getLogger("MoDeGPT")
@@ -68,8 +68,11 @@ def _debug_load_param(*args, **kwargs):
 tm._load_parameter_into_model = _debug_load_param
 
 
+@torch.no_grad()
 def main(trial: optuna.Trial = None, config: CompressionConfig | None = None):
-    global decay_scores
+
+    gc.collect()
+    torch.cuda.empty_cache()
 
     adapter = None
     start_memory_usage_worker()
@@ -83,6 +86,7 @@ def main(trial: optuna.Trial = None, config: CompressionConfig | None = None):
 
     adapter = ModelAdapter.from_model(model=model, tokenizer=tokenizer)
     adapter.config = config
+    # adapter.metrics["args"] = vars(config)
 
     baseline_ppl = compute_perplexity(
         model,
@@ -94,47 +98,64 @@ def main(trial: optuna.Trial = None, config: CompressionConfig | None = None):
     logger.info(f"Baseline ppl: {baseline_ppl}")
     adapter.metrics["baseline-ppl"] = baseline_ppl
 
-    cov_mlp, cov_q, cov_k, cov_x, bi_scores = load_calibs(
-        adapter=adapter,
-        n_samples=config.calib_size,
-        batch_size=config.calibs_batch_size,
-        dataset=adapter.config.dataset,
-    )
-
-    layer_keep_ratios = allocate_global_sparsity(
-        bi_scores,
-        compression_ratio=config.compression_ratio,
-        smoothing=adapter.config.sparsity_smoothing,
-        max_sparsity=adapter.config.max_sparsity,
-        adapter=adapter,
-    )
-
     torch.cuda.empty_cache()
 
     order = config.order
+    n_layers = adapter.n_layers
     save_dir = os.path.join(config.output_dir, "model")
 
-    if "mlp" in order:
-        compress_nystrom(
+    layers_per_step = 48
+    rotary_masks = []
+    for start_idx in range(0, n_layers, layers_per_step):
+        target_layers = [i for i in range(start_idx, min(n_layers, start_idx + layers_per_step))]
+
+        cov_mlp, cov_q, cov_k, cov_x, bi_scores = load_calibs(
             adapter=adapter,
-            cov=cov_mlp,
-            keep_ratios=layer_keep_ratios,
-            target_layers=[i for i in range(adapter.n_layers)],
+            n_samples=config.calib_size,
+            batch_size=config.calibs_batch_size,
+            dataset=adapter.config.dataset,
+            target_layers=target_layers,
         )
 
-    rotary_masks = None
-    if "qk" in order:
-        rotary_masks = compress_qk(
-            adapter=adapter, cov=(cov_q, cov_k), keep_ratios=layer_keep_ratios
-        )
-
-    if "vo" in order:
-        compress_vo(
+        layer_keep_ratios = allocate_global_sparsity(
+            bi_scores,
+            compression_ratio=config.compression_ratio,
+            smoothing=adapter.config.sparsity_smoothing,
+            max_sparsity=adapter.config.max_sparsity,
             adapter=adapter,
-            cov=cov_x,
-            keep_ratios=layer_keep_ratios,
         )
 
+        if "mlp" in order:
+            compress_nystrom(
+                adapter=adapter,
+                cov=cov_mlp,
+                keep_ratios=layer_keep_ratios,
+                target_layers=target_layers,
+            )
+
+        if "qk" in order:
+            rms = compress_qk(
+                adapter=adapter,
+                cov=(cov_q, cov_k),
+                keep_ratios=layer_keep_ratios,
+                target_layers=target_layers,
+            )
+            rotary_masks.extend(rms)
+
+        if "vo" in order:
+            compress_vo(
+                adapter=adapter,
+                cov=cov_x,
+                keep_ratios=layer_keep_ratios,
+                target_layers=target_layers,
+            )
+
+        del cov_mlp, cov_q, cov_k, cov_x
+        cov_mlp, cov_q, cov_k, cov_x = None, None, None, None
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    adapter.convert_model(saved_layers_dir=adapter.config.temp_storage_dir)
     adapter.patch_config()
 
     save_compressed_model(
@@ -152,7 +173,6 @@ def main(trial: optuna.Trial = None, config: CompressionConfig | None = None):
     del cov_mlp
 
     torch.cuda.empty_cache()
-    import gc
 
     gc.collect()
 
@@ -167,10 +187,14 @@ def main(trial: optuna.Trial = None, config: CompressionConfig | None = None):
         dataset=adapter.config.dataset,
         adapter=adapter,
     )
+
     adapter.metrics[f"ppl-{adapter.config.dataset}"] = compressed_ppl
+    adapter.save_metrics()
+
     logger.info(f"Compressed (PPL): {compressed_ppl}")
 
     return compressed_ppl
 
 
-main()
+if __name__ == "__main__":
+    main()

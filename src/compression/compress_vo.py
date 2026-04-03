@@ -16,7 +16,12 @@ def compress_vo(
     cov: list[Tensor],
     keep_ratios=None,
     slice_dims=True,
+    target_layers: list[int] | None = None,
 ):
+
+    if target_layers is None:
+        target_layers = [i for i in range(adapter.n_layers)]
+
     model = adapter.model
     n_layers = adapter.n_layers
     n_heads = adapter.n_heads
@@ -26,7 +31,7 @@ def compress_vo(
 
     grouped = n_kv_heads != n_heads
 
-    for layer in range(n_layers):
+    for layer in target_layers:
         keep_ratio = keep_ratios[layer]
         rank_i = int(head_dim * keep_ratio)
         rank_i = max(1, rank_i)
@@ -81,13 +86,24 @@ def compress_vo(
                     arch=arch,
                 )
 
-        if slice_dims:
-            adapter.slice_vo_dims(
-                layer_idx=layer,
-                new_heads_V=new_heads_V,
-                new_heads_O=new_heads_O,
-                bias=True if arch == "opt" else False,
-            )
+        V_heads = torch.cat(new_heads_V, dim=0).to(device="cuda", dtype=torch.bfloat16)
+        O_heads = torch.cat(new_heads_O, dim=1).to(device="cuda", dtype=torch.bfloat16)
+
+        weight_cache = {"v_proj": V_heads, "o_proj": O_heads}
+
+        adapter.save_layer(
+            output_dir=adapter.config.temp_storage_dir,
+            suffix="vo",
+            weights=weight_cache,
+            layer_idx=layer,
+        )
+        # if slice_dims:
+        #     adapter.slice_vo_dims(
+        #         layer_idx=layer,
+        #         new_heads_V=new_heads_V,
+        #         new_heads_O=new_heads_O,
+        #         bias=True if arch == "opt" else False,
+        #     )
 
         if logger:
             logger.info(f"[VO] ✅ Compressed layer {layer} to rank {rank_i} per head")

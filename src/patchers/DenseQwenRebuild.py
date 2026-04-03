@@ -247,11 +247,7 @@ class Qwen3Attention(nn.Module):
         # When rotary masks are used (QK compression with dim slicing), norms must
         # keep the original head_dim so checkpoint weights load correctly.
         # We gather the correct weight elements per-head in forward using the rotary mask.
-        norm_dim = (
-            (config.hidden_size // config.num_attention_heads)
-            if layer_rotary_mask is not None
-            else self.head_dims
-        )
+        norm_dim = self.config.head_dim
         self.q_norm = Qwen3RMSNorm(
             norm_dim, eps=config.rms_norm_eps
         )  # unlike olmo, only on the head dim!

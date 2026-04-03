@@ -107,14 +107,19 @@ class LlamaAdapter(ModelAdapter):
     ):
         raise NotImplementedError("custom calibrate model not impl for llama")
 
+    """
+    For all the hooks we compute the matmul in f32 then cast up when acc to f64
+    Hopefully not missing any detail because it makes it faster for large models.
+    """
+
     @staticmethod
     def _make_proj_hook(layer_idx, cov_list, n_heads, head_dim, d_model):
         @torch.no_grad()
         def hook(module, inp, out):
-            proj_out = out.detach().to(dtype=dtype_p, device="cuda")
+            proj_out = out.detach().to(dtype=torch.float64, device="cuda")
             proj = proj_out.view(-1, n_heads, head_dim)
             proj = proj.permute(1, 0, 2)  # [n_heads, B*T, head_dim]
-            C_proj = torch.bmm(proj.transpose(1, 2), proj).to(calib_device)
+            C_proj = torch.bmm(proj.transpose(1, 2), proj).to(dtype=dtype_p, device=calib_device)
             cov_list[layer_idx] += C_proj
 
         return hook
@@ -124,8 +129,8 @@ class LlamaAdapter(ModelAdapter):
         @torch.no_grad()
         def hook(module, input: Tuple[torch.Tensor]):
             x_input = input[0]
-            H = x_input.detach().to(dtype=dtype_p).view(-1, x_input.size(-1))
-            cov_mlp_list[layer_idx] += (H.T @ H).to(device=calib_device)
+            H = x_input.detach().to(dtype=torch.float64).view(-1, x_input.size(-1))
+            cov_mlp_list[layer_idx] += (H.T @ H).to(dtype=dtype_p, device=calib_device)
             return None
 
         return hook
@@ -134,8 +139,10 @@ class LlamaAdapter(ModelAdapter):
     def _input_hook(layer_idx, cov_list):
         @torch.no_grad()
         def hook(module, inp, out):
-            proj_out = out.detach().to(dtype=dtype_p, device="cuda")
-            cov_list[layer_idx] += torch.sum(proj_out.mT @ proj_out, dim=0).to(device=calib_device)
+            proj_out = out.detach().to(dtype=torch.float64, device="cuda")
+            cov_list[layer_idx] += torch.sum(proj_out.mT @ proj_out, dim=0).to(
+                dtype=dtype_p, device=calib_device
+            )
 
         return hook
 

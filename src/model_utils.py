@@ -142,6 +142,9 @@ def reload_compressed_model(model_dir: str, device="cuda:0", tokenizer_source: s
             tokenizer_source = model_dir
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+    # from transformers import LlamaTokenizer
+
+    # tokenizer = LlamaTokenizer.from_pretrained(tokenizer_source)
 
     model = AutoModelForCausalLM.from_pretrained(
         model_dir,

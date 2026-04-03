@@ -15,9 +15,6 @@ from src.model_utils import dtype_p, calib_device
 
 from datetime import datetime
 
-import lm_eval
-from lm_eval.models.huggingface import HFLM
-
 
 @dataclass
 class MLPTensors:
@@ -184,6 +181,61 @@ class ModelAdapter(ABC):
     ):
         ModelAdapter.save_metrics_static(path=path, backup_dir=backup_dir, run_metrics=self.metrics)
 
+    def save_layer(self, output_dir: str, suffix: str, weights: dict[str, Tensor], layer_idx):
+        import os
+
+        output_dir = os.path.expandvars(output_dir)
+
+        os.makedirs(output_dir, exist_ok=True)
+        p = os.path.join(output_dir, f"layer_{layer_idx}_{suffix}")
+        torch.save(weights, p)
+
+    @torch.no_grad()
+    def convert_model(
+        self, saved_layers_dir: str = "./compressed_output/layers/", suffixes=["mlp", "qk", "vo"]
+    ):
+        saved_layers_dir = os.path.expandvars(saved_layers_dir)
+
+        def tensor_to_linear(weight: Tensor) -> nn.Linear:
+            linear = nn.Linear(
+                in_features=weight.shape[1],
+                out_features=weight.shape[0],
+                device="cuda",
+                dtype=torch.bfloat16,
+                bias=False,
+            )
+            linear.weight.data.copy_(weight.to(torch.bfloat16))
+            return linear
+
+        for suffix in suffixes:
+            for layer_idx in range(self.n_layers):
+                path = os.path.join(saved_layers_dir, f"layer_{layer_idx}_{suffix}")
+                compressed = torch.load(path, map_location="cuda:0")
+
+                if suffix == "mlp":
+                    self.replace_mlp_layers(
+                        layer_idx,
+                        new_up=tensor_to_linear(compressed["up"]),
+                        new_down=tensor_to_linear(compressed["down"]),
+                        new_gate=tensor_to_linear(compressed["gate"]),
+                    )
+                elif suffix == "qk":
+                    self.replace_attn_layers(
+                        layer_idx,
+                        new_q=tensor_to_linear(compressed["q_proj"]),
+                        new_k=tensor_to_linear(compressed["k_proj"]),
+                        new_v=None,
+                        new_o=None,
+                    )
+                elif suffix == "vo":
+                    self.replace_attn_layers(
+                        layer_idx,
+                        new_q=None,
+                        new_k=None,
+                        new_v=tensor_to_linear(compressed["v_proj"]),
+                        new_o=tensor_to_linear(compressed["o_proj"]),
+                    )
+
     @property
     def n_kv_heads(self):
         getattr()
@@ -228,7 +280,8 @@ class ModelAdapter(ABC):
 
     @property
     def head_dim(self) -> int:
-        return self.d_model // self.n_heads
+        return self.model_config.head_dim
+        # return self.d_model // self.n_heads
 
     @property
     def n_experts(self) -> int:
@@ -356,10 +409,10 @@ class ModelAdapter(ABC):
             in_features=up_weights.shape[1],
             out_features=up_weights.shape[0],
             device="cuda",
-            dtype=torch.float16,
+            dtype=torch.bfloat16,
             bias=True if comps.up_proj.bias is not None and bias else False,
         )
-        new_layer_U.weight.data.copy_(up_weights.to(torch.float16))
+        new_layer_U.weight.data.copy_(up_weights.to(torch.bfloat16))
         if bias and new_bias_u is not None:
             if new_layer_U.bias is not None:
                 new_layer_U.bias.data.copy_(new_bias_u)
@@ -378,10 +431,10 @@ class ModelAdapter(ABC):
                 in_features=gate_weights.shape[1],
                 out_features=gate_weights.shape[0],
                 device="cuda",
-                dtype=torch.float16,
+                dtype=torch.bfloat16,
                 bias=True if gate_has_bias and bias else False,
             )
-            new_layer_G.weight.data.copy_(gate_weights.to(torch.float16))
+            new_layer_G.weight.data.copy_(gate_weights.to(torch.bfloat16))
             if bias and new_bias_g is not None:
                 if new_layer_G.bias is not None:
                     new_layer_G.bias.data.copy_(new_bias_g)
@@ -390,10 +443,10 @@ class ModelAdapter(ABC):
             in_features=down_weights.shape[1],
             out_features=down_weights.shape[0],
             device="cuda",
-            dtype=torch.float16,
+            dtype=torch.bfloat16,
             bias=True if comps.down_proj.bias is not None and bias else False,
         )
-        new_layer_D.weight.data.copy_(down_weights.to(torch.float16))
+        new_layer_D.weight.data.copy_(down_weights.to(torch.bfloat16))
         if comps.down_proj.bias is not None and bias:
             if new_layer_D.bias is not None:
                 new_layer_D.bias.data.copy_(comps.down_proj.bias.data)
@@ -413,22 +466,22 @@ class ModelAdapter(ABC):
     ):
         comps = self.get_attn_components(layer_idx)
 
-        Q_heads = torch.cat(new_heads_Q, dim=0).to(device="cuda", dtype=torch.float16)
-        K_heads = torch.cat(new_heads_K, dim=0).to(device="cuda", dtype=torch.float16)
+        Q_heads = torch.cat(new_heads_Q, dim=0).to(device="cuda", dtype=torch.bfloat16)
+        K_heads = torch.cat(new_heads_K, dim=0).to(device="cuda", dtype=torch.bfloat16)
 
         bias_Q = None
         if len(new_bias_Q) > 0:
-            bias_Q = torch.cat(new_bias_Q, dim=0).to(device="cuda", dtype=torch.float16)
+            bias_Q = torch.cat(new_bias_Q, dim=0).to(device="cuda", dtype=torch.fbloat16)
 
         bias_K = None
         if len(new_bias_K) > 0:
-            bias_K = torch.cat(new_bias_K, dim=0).to(device="cuda", dtype=torch.float16)
+            bias_K = torch.cat(new_bias_K, dim=0).to(device="cuda", dtype=torch.bfloat16)
 
         new_layer_Q = nn.Linear(
             in_features=Q_heads.shape[1],
             out_features=Q_heads.shape[0],
             device="cuda",
-            dtype=torch.float16,
+            dtype=torch.bfloat16,
             bias=comps.q_proj.bias is not None and bias and (bias_Q is not None),
         )
         new_layer_Q.weight.data.copy_(Q_heads)
@@ -439,7 +492,7 @@ class ModelAdapter(ABC):
             in_features=K_heads.shape[1],
             out_features=K_heads.shape[0],
             device="cuda",
-            dtype=torch.float16,
+            dtype=torch.bfloat16,
             bias=comps.k_proj.bias is not None and bias and (bias_K is not None),
         )
         new_layer_K.weight.data.copy_(K_heads)
@@ -461,14 +514,14 @@ class ModelAdapter(ABC):
         original_o = comps.o_proj
         original_v = comps.v_proj
 
-        V_heads = torch.cat(new_heads_V, dim=0).to(device="cuda", dtype=torch.float16)
-        O_heads = torch.cat(new_heads_O, dim=1).to(device="cuda", dtype=torch.float16)
+        V_heads = torch.cat(new_heads_V, dim=0).to(device="cuda", dtype=torch.bfloat16)
+        O_heads = torch.cat(new_heads_O, dim=1).to(device="cuda", dtype=torch.bfloat16)
 
         new_layer_V = nn.Linear(
             in_features=V_heads.shape[1],
             out_features=V_heads.shape[0],
             device="cuda",
-            dtype=torch.float16,
+            dtype=torch.bfloat16,
             bias=False,  # As per original implementation, bias=False for V
         )
         new_layer_V.weight.data.copy_(V_heads)
@@ -477,7 +530,7 @@ class ModelAdapter(ABC):
             in_features=O_heads.shape[1],
             out_features=O_heads.shape[0],
             device="cuda",
-            dtype=torch.float16,
+            dtype=torch.bfloat16,
             bias=True if original_o.bias is not None and bias else False,
         )
         new_layer_O.weight.data.copy_(O_heads)

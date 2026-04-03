@@ -23,7 +23,8 @@ uv sync
 
 ### 2. Run compression
 
-See tests.sh for example on how to run. See src/adapters/CompressionConfig for a full list of cli args
+See tests.sh for run example. See src/adapters/CompressionConfig.py for a full list of cli args.
+Each arg in CompressionConfig directly translates to a cli arg of the form `--dataset wikitext`
 
 Must do:
 
@@ -33,7 +34,7 @@ python -m src.run_modegpt [options]
 
 ### 3. Additional Information
 
-Currently tested against OPT, Llama2-7b, and llama3-8b models. `
+Currently tested against OPT, Llama2-7b, and llama3-8b models.
 
 To implement for additional model architectures you will have to modify / create your own patched version of modeling_llama (different for each architecture). See `patchers/OPTRebuild.py`, `patchers/LlamaRebuild.py` and the `patch_config` function in `patchers/patch.py`. This process mostly involves changing the dimensions of the linear layers when they are initialized to the compressed dimensions, but other steps may be required depending on the architecture you are working with. For example, llama3-8b requires handling RoPE.
 

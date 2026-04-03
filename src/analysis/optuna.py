@@ -14,20 +14,20 @@ def objective(trial: optuna.Trial):
     """
 
     config = CompressionConfig(
-        model="meta-llama/Meta-Llama-3-8B",
+        model="Qwen/Qwen3-32B",
         device=0,
         calib_size=128,
         calibs_batch_size=16,
-        output_dir=f"{os.environ.get('TMPDIR', '/tmp')}/compressed_output/Llama3-8B/",
-        note=f"optuna sparsity Llam3-8B trial {trial.number}",
-        compression_ratio=0.25,
+        output_dir=f"{os.environ.get('TMPDIR', '/tmp')}/compressed_output/Qwen3-32B/",
+        note=f"optuna sparsity Qwen3-32B trial {trial.number}",
+        compression_ratio=0.5,
         order=f"mlp,qk,vo",
         max_sparsity=0.95,
-        sparsity_smoothing=trial.suggest_float("sparsity_smoothing", 0.0225, 0.25),
-        ridge_vo=trial.suggest_float("ridge_vo", 1e-7, 1e-1, log=True),
-        ridge_qk=trial.suggest_float("ridge_qk", 1e-7, 1e-1, log=True),
+        nystrom_ridge=trial.suggest_categorical("nystrom_ridge", [1, 1e-1, 1e-2, 1e-3, 1e-4]),
+        sparsity_smoothing=trial.suggest_float("sparsity_smoothing", 0.0225, 0.15),
+        ridge_vo=trial.suggest_categorical("ridge_vo_cat", [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]),
+        ridge_qk=trial.suggest_categorical("ridge_qk_cat", [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]),
         dataset="alpaca",
-        optuna=True,
     )
 
     score = main(trial=trial, config=config)
@@ -36,8 +36,8 @@ def objective(trial: optuna.Trial):
 
 
 study = optuna.create_study(
-    study_name="modegpt-llama3-8b",
-    storage="sqlite:///sweep-modegpt-llama3-8b.db",
+    study_name="modegpt-qwen3-32b-better",
+    storage="sqlite:///sweep-modegpt-qwen3-32b.db",
     load_if_exists=True,
     direction="minimize",
 )

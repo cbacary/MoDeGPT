@@ -27,15 +27,12 @@ def get_ridge_scores(C, layer_idx: int, ridge_lambda=1e-2) -> Tensor:
 
 @torch.no_grad()
 def compress_weights(
-    comps: MLPComponents,
-    C: Tensor,
-    keep_ratio: float,
-    layer_idx: int,
+    comps: MLPComponents, C: Tensor, keep_ratio: float, layer_idx: int, ridge_lambda: float
 ):
 
     global decay_scores
 
-    ridge_scores = get_ridge_scores(C, layer_idx=layer_idx)
+    ridge_scores = get_ridge_scores(C, layer_idx=layer_idx, ridge_lambda=ridge_lambda)
 
     rank = int(C.shape[0] * keep_ratio)
 
@@ -83,6 +80,8 @@ def compress_nystrom(
     arch = adapter.arch
 
     for layer_idx in target_layers:
+        weight_cache = {}
+
         comps = adapter.get_mlp_components(layer_idx)
         c = cov[layer_idx]
 
@@ -91,18 +90,28 @@ def compress_nystrom(
             c,
             keep_ratios[layer_idx],
             layer_idx=layer_idx,
+            ridge_lambda=adapter.config.nystrom_ridge,
         )
         logger.info(f"[MLP] ✅ Layer {layer_idx}  compressed to rank {rank}")
 
-        adapter.slice_gate_dims(
+        weight_cache = {"up": W_u_proj.T, "gate": W_g_proj.T, "down": W_d_proj.T}
+
+        adapter.save_layer(
+            output_dir=adapter.config.temp_storage_dir,
+            suffix="mlp",
+            weights=weight_cache,
             layer_idx=layer_idx,
-            up_weights=W_u_proj.T,
-            down_weights=W_d_proj.T,
-            gate_weights=W_g_proj.T,
-            new_bias_u=None,
-            new_bias_g=None,
-            bias=False,
-            expert_idx=None,
         )
+
+        # adapter.slice_gate_dims(
+        #     layer_idx=layer_idx,
+        #     up_weights=W_u_proj.T,
+        #     down_weights=W_d_proj.T,
+        #     gate_weights=W_g_proj.T,
+        #     new_bias_u=None,
+        #     new_bias_g=None,
+        #     bias=False,
+        #     expert_idx=None,
+        # )
 
         torch.cuda.empty_cache()
