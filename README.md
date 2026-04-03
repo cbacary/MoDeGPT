@@ -32,6 +32,12 @@ Must do:
 python -m src.run_modegpt [options]
 ```
 
+## Useful options
+
+See `tests.sh` for useful examples on running Qwen models. You should simply be able to swap out the MODEL_NAME with a different supported model and be able to run.
+
+`--temp_storage_dir` - a directory to output the compressed versions of the layers. Ideally, point this to a location with fast read/write speeds.
+
 ### 3. Additional Information
 
 Currently tested against OPT, Llama2-7b, and llama3-8b models.
