@@ -36,7 +36,15 @@ python -m src.run_modegpt [options]
 
 See `tests.sh` for useful examples on running Qwen models. You should simply be able to swap out the MODEL_NAME with a different supported model and be able to run.
 
+See `src/adapters/CompressionConfig.py` for a list of passable options and args. 
+
 `--temp_storage_dir` - a directory to output the compressed versions of the layers. Ideally, point this to a location with fast read/write speeds.
+
+### Options to Lower VRAM usage
+The two most notable things you can use to control VRAM usage:
+
+- Lower the `calibs_batch_size` command line arg - Each batch is `calibs_batch_size * 2048` tokens.
+- Lower `layers_per_step` in `run_modegpt.py` - controls how many layers are calibrated against and compressed at a time. 
 
 ### 3. Additional Information
 
